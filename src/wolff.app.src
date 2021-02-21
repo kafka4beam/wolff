@@ -1,0 +1,17 @@
+{application, wolff,
+ [{description, "Kafka's publisher"},
+  {vsn, "1.5.0"},
+  {registered, []},
+  {applications,
+   [kernel,
+    stdlib,
+    kafka_protocol,
+    replayq
+   ]},
+  {env,[]},
+  {mod, {wolff_app, start}},
+  {modules, []},
+  {maintainers, []},
+  {licenses, ["Apache 2.0"]},
+  {links, []}
+ ]}.
