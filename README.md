@@ -2,6 +2,29 @@
 
 Kafka's publisher [why the name](https://en.wikipedia.org/wiki/Kurt_Wolff_(publisher))
 
+# How is it different from [brod](https://github.com/kafka4beam/brod)
+
+## More resilient to network or Kafka disturbances
+
+With `replayq_dir` producer config set to a directory,
+`wolff` will queue pending messages on disk so it can survive from message loss
+in case of application, network or kafka disturbances.
+
+In case of producer restart, messages queued on disk are replayed towards kafka,
+however, async callback functions are not evaluated upon acknowledgements received
+from kafka for replayed messages.
+
+## More flexible connection management
+
+`wolff` provides `per_partition` and `per_broker` connection management strategy.
+In case of `per_partition` strategy, `wolff` establishes one TCP connection
+per-partition leader. `brod` however, only establishes connections per-broker,
+that is, if two partition leaders happen to reside on the same broker,
+they will have to share the same TCP connection.
+
+There is still a lack of benchmarking to tell the difference of how performant
+`per_partition` is though.
+
 ## Example Code
 
 ### Sync Produce
@@ -145,17 +168,6 @@ ok = wolff:stop_and_delete_supervised_client(Client).
 * `partition_count_refresh_interval_seconds`: default=`300` (5 minutes)
   Non-negative integer to refresh topic metadata in order to auto-discover newly added partitions.
   Set `0` to disable auto-discover.
-
-## Resilient to Application, Network or Kafka Disturbances
-
-With `replayq_dir` producer config set to a directory,
-`wolff` will queue pending messages on disk so it can survive from message loss
-in case of application, network or kafka disturbances.
-
-In case of producer restart, messages queued on disk are replayed towards kafka,
-however, async callback functions are not evaluated upon acknowledgements received
-from kafka for replayed messages.
-
 
 ## How to Test
 
