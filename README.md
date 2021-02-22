@@ -1,6 +1,12 @@
+# NOTICE
+
+This lib is a fork of the upstream repo disclosed by
+[EMQ Technologies Co., Ltd.](https://www.emqx.io)
+GitHub/[emqx](https://github.com/emqx)
+
 # Wolff
 
-Kafka's publisher [why the name](https://en.wikipedia.org/wiki/Kurt_Wolff_(publisher))
+Kafka's publisher. See [why the name](https://en.wikipedia.org/wiki/Kurt_Wolff_(publisher))
 
 # How is it different from [brod](https://github.com/kafka4beam/brod)
 
