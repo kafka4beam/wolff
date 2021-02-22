@@ -1,16 +1,16 @@
-# NOTICE
+## NOTICE
 
 This lib is a fork of the upstream repo disclosed by
 [EMQ Technologies Co., Ltd.](https://www.emqx.io)
 GitHub/[emqx](https://github.com/emqx)
 
-# Wolff
+## Wolff
 
 Kafka's publisher. See [why the name](https://en.wikipedia.org/wiki/Kurt_Wolff_(publisher))
 
-# How is it different from [brod](https://github.com/kafka4beam/brod)
+## How is it different from [brod](https://github.com/kafka4beam/brod)
 
-## More resilient to network or Kafka disturbances
+### More resilient to network and Kafka disturbances
 
 With `replayq_dir` producer config set to a directory,
 `wolff` will queue pending messages on disk so it can survive from message loss
@@ -20,7 +20,7 @@ In case of producer restart, messages queued on disk are replayed towards kafka,
 however, async callback functions are not evaluated upon acknowledgements received
 from kafka for replayed messages.
 
-## More flexible connection management
+### More flexible connection management
 
 `wolff` provides `per_partition` and `per_broker` connection management strategy.
 In case of `per_partition` strategy, `wolff` establishes one TCP connection
@@ -30,6 +30,11 @@ they will have to share the same TCP connection.
 
 There is still a lack of benchmarking to tell the difference of how performant
 `per_partition` is though.
+
+### Auto partition count refresh
+
+`wolff` periodically refreshes topic metata to discover partition increase
+and automatically rebalance the partitioner.
 
 ## Example Code
 
