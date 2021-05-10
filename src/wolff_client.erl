@@ -179,8 +179,12 @@ do_get_leader_connections(#{conns := Conns} = St, Topic) ->
               end,
   F = fun({T, P}, MaybePid, Acc) when T =:= Topic ->
           case is_alive(MaybePid) of
-            true -> [{P, MaybePid} | Acc];
-            false -> [{P, ?conn_down(MaybePid)} | Acc]
+            true ->
+                  [{P, MaybePid} | Acc];
+            false when is_pid(MaybePid) ->
+                  [{P, ?conn_down(noproc)} | Acc];
+            false ->
+                  [{P, ?conn_down(MaybePid)} | Acc]
           end;
          (_, _, Acc) -> Acc
       end,

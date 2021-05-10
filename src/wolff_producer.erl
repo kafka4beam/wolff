@@ -450,6 +450,7 @@ mark_connection_down(#{topic := Topic,
                        partition := Partition,
                        conn := Old
                       } = St0, Reason) ->
+  false = is_pid(Reason),
   St = St0#{conn := Reason},
   case is_idle(St) of
     true ->
