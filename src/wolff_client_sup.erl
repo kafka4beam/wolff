@@ -61,7 +61,7 @@ find_client(ClientId) ->
     {ClientId, Restarting, _, _} ->
       {error, Restarting};
     false ->
-      erlang:error({no_such_client, ClientId})
+      {error, no_such_client}
   end.
 
 child_spec(ClientId, Hosts, Config) ->
@@ -71,4 +71,3 @@ child_spec(ClientId, Hosts, Config) ->
     type => worker,
     modules => [wolff_client]
    }.
-

@@ -264,7 +264,50 @@ stats_test() ->
   ?assertEqual(undefined, whereis(wolff_stats)),
   ok.
 
+check_connectivity_test() ->
+  ClientId = <<"client-stats-test">>,
+  _ = application:stop(wolff), %% ensure stopped
+  {ok, _} = application:ensure_all_started(wolff),
+  ClientCfg = client_config(),
+  {ok, Client} = start_client(ClientId, ?HOSTS, ClientCfg),
+  ?assertEqual(ok, wolff:check_connectivity(ClientId)),
+  ok = stop_client(Client),
+  ?assertEqual({error, no_such_client}, wolff:check_connectivity(ClientId)),
+  ok = application:stop(wolff).
+
+
+cliet_state_upgrade_test() ->
+  ClientId = <<"client-stats-test">>,
+  _ = application:stop(wolff), %% ensure stopped
+  {ok, _} = application:ensure_all_started(wolff),
+  ClientCfg = client_config(),
+  {ok, Client} = start_client(ClientId, ?HOSTS, ClientCfg),
+  ?assertEqual(ok, wolff:check_connectivity(ClientId)),
+   timer:sleep(500),
+  ok = verify_state_upgrade(Client, fun() -> _ = wolff_client:get_id(Client) end),
+  ok = verify_state_upgrade(Client, fun() -> Client ! ignore end),
+  ok = verify_state_upgrade(Client, fun() -> gen_server:cast(Client, ignore) end),
+  ok = stop_client(Client),
+  ?assertEqual({error, no_such_client}, wolff:check_connectivity(ClientId)),
+  ok = application:stop(wolff).
+
 %% helpers
+
+%% verify wolff_client state upgrade.
+%% 1. replace the state with old version
+%% 2. assert the replace worked
+%% 3. trigger some activity to the wolff_client pid
+%% 4. check if the state is upgraded to new version
+verify_state_upgrade(Client, F) ->
+  sys:replace_state(Client, fun(St) -> to_old_client_state(St) end),
+  ?assertMatch(#{connect := ConnFun} when is_function(ConnFun), sys:get_state(Client)),
+  _ = F(), %% trigger a handle_call, handle_info or handle_cast which in turn triggers state upgrade
+  ?assertMatch(#{conn_config := _}, sys:get_state(Client)),
+  ok.
+
+to_old_client_state(St0) ->
+  St = maps:without([conn_config], St0),
+  St#{connect => fun() -> error(unexpected) end}.
 
 client_config() -> #{}.
 
@@ -290,4 +333,3 @@ batch_bytes(Batch) ->
 encoded_bytes(Batch) ->
   Encoded = kpro_batch:encode(2, Batch, no_compression),
   iolist_size(Encoded).
-

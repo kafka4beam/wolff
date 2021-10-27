@@ -88,7 +88,7 @@ stop_linked(#{workers := Workers}) when is_map(Workers) ->
                 maps:to_list(Workers)).
 
 %% @doc Start supervised producers.
--spec start_supervised(wolff:client_id(), topic(), config()) -> {ok, producers()}.
+-spec start_supervised(wolff:client_id(), topic(), config()) -> {ok, producers()} | {error, any()}.
 start_supervised(ClientId, Topic, ProducerCfg) ->
   {ok, Pid} = wolff_producers_sup:ensure_present(ClientId, Topic, ProducerCfg),
   case gen_server:call(Pid, get_workers, infinity) of
@@ -114,8 +114,13 @@ stop_supervised(#{client_id := ClientId, workers := NamedEts, topic := Topic}) -
 -spec stop_supervised(wolff:client_id(), topic(), wolff:name()) -> ok.
 stop_supervised(ClientId, Topic, NamedEts) ->
   wolff_producers_sup:ensure_absence(ClientId, NamedEts),
-  {ok, Pid} = wolff_client_sup:find_client(ClientId),
-  ok = wolff_client:delete_producers_metadata(Pid, Topic).
+  case wolff_client_sup:find_client(ClientId) of
+    {ok, Pid} ->
+       ok = wolff_client:delete_producers_metadata(Pid, Topic);
+    {error, _} ->
+       %% not running
+       ok
+  end.
 
 %% @doc Retrieve the per-partition producer pid.
 -spec pick_producer(producers(), [wolff:msg()]) -> {partition(), pid()}.
