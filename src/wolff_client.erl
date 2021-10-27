@@ -362,9 +362,7 @@ parse_broker_meta(BrokerMeta) ->
 log_warn(Fmt, Args) -> error_logger:warning_msg(Fmt, Args).
 
 do_connect(Host, ConnConfig) ->
-    %% do not link the connection, connections are monitored by producers.
-    %% stopping client does ot necessary have to bring down all connections
-    kpro:connect(Host, ConnConfig#{nolink => true}).
+    kpro:connect(Host, ConnConfig).
 
 %% prior to 1.5.2, the connect config is hidden in an anonymous function
 %% which will cause 'badfun' exception after beam is purged.
