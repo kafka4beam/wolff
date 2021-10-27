@@ -179,6 +179,7 @@ zero_ack_test() ->
   {Partition, BaseOffset} = wolff:send_sync(Producers, [Msg], 3000),
   io:format(user, "\nmessage produced to partition ~p at offset ~p\n",
             [Partition, BaseOffset]),
+  ?assertEqual(-1, BaseOffset),
   ok = wolff:stop_producers(Producers),
   ok = stop_client(Client).
 
