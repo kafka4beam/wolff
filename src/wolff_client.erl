@@ -20,6 +20,7 @@
 %% APIs
 -export([start_link/3, stop/1]).
 -export([get_leader_connections/2, recv_leader_connection/4, get_id/1, delete_producers_metadata/2]).
+-export([check_connectivity/1]).
 
 %% gen_server callbacks
 -export([code_change/3, handle_call/3, handle_cast/2, handle_info/2, init/1, terminate/2]).
@@ -37,7 +38,7 @@
       #{client_id := wolff:client_id(),
         seed_hosts := host(),
         config := config(),
-        connect := fun((host()) -> {ok, connection()} | {error, any()}),
+        conn_config := kpro:conn_config(),
         conns := #{conn_id() => connection()},
         metadata_ts := #{topic() => erlang:timestamp()},
         %% only applicable when connection strategy is per_broker
@@ -62,15 +63,12 @@
 -spec start_link(wolff:client_id(), [host()], config()) ->
   {ok, pid()} | {error, any()}.
 start_link(ClientId, Hosts, Config) ->
-  % Split out connection config and keep it in an anonymous function
-  % instead of keeping it in my gen_server looping state
-  % this is an easy trick to avoid passwords in connection config getting dumpped to crash logs
   {ConnCfg0, MyCfg} = split_config(Config),
   ConnCfg = ConnCfg0#{client_id => ClientId},
   St = #{client_id => ClientId,
          seed_hosts => Hosts,
          config => MyCfg,
-         connect => fun(Host) -> kpro:connect(Host, ConnCfg) end,
+         conn_config => ConnCfg,
          conns => #{},
          metadata_ts => #{},
          leaders => #{}
@@ -89,7 +87,16 @@ get_id(Pid) ->
 -spec get_leader_connections(pid(), topic()) ->
         {ok, [{partition(), pid() | ?conn_down(_)}]} | {error, any()}.
 get_leader_connections(Client, Topic) ->
-  gen_server:call(Client, {get_leader_connections, Topic}, infinity).
+   safe_call(Client, {get_leader_connections, Topic}).
+
+-spec check_connectivity(pid()) -> ok | {error, any()}.
+check_connectivity(Pid) ->
+  safe_call(Pid, check_connectivity).
+
+safe_call(Pid, Call) ->
+  try gen_server:call(Pid, Call, infinity)
+  catch error : Reason -> {error, Reason}
+  end.
 
 %% request client to send Pid the leader connection.
 recv_leader_connection(Client, Topic, Partition, Pid) ->
@@ -102,6 +109,8 @@ init(St) ->
   erlang:process_flag(trap_exit, true),
   {ok, St}.
 
+handle_call(Call, From, #{connect := _Fun} = St) ->
+    handle_call(Call, From, upgrade(St));
 handle_call(get_id, _From, #{client_id := Id} = St) ->
   {reply, Id, St};
 handle_call({get_leader_connections, Topic}, _From, St0) ->
@@ -116,12 +125,20 @@ handle_call(stop, From, #{conns := Conns} = St) ->
   ok = close_connections(Conns),
   gen_server:reply(From, ok),
   {stop, normal, St#{conns := #{}}};
+handle_call(check_connectivity, _From, #{seed_hosts := Hosts, conn_config := ConnConfig} = St) ->
+  Res = case kpro:connect_any(Hosts, ConnConfig) of
+          {ok, Conn} -> ok = close_connection(Conn);
+          {error, Reason} ->  {error, Reason}
+        end,
+  {reply, Res, St};
 handle_call(_Call, _From, St) ->
   {noreply, St}.
 
 handle_info(_Info, St) ->
-  {noreply, St}.
+  {noreply, upgrade(St)}.
 
+handle_cast(Cast, #{connect := _Fun} = St) ->
+    handle_cast(Cast, upgrade(St));
 handle_cast({recv_leader_connection, Topic, Partition, Caller}, St0) ->
   case ensure_leader_connections(St0, Topic) of
     {ok, St} ->
@@ -206,11 +223,11 @@ ensure_leader_connections(St, Topic) ->
     false -> do_ensure_leader_connections(St, Topic)
   end.
 
-do_ensure_leader_connections(#{connect := ConnectFun,
+do_ensure_leader_connections(#{conn_config := ConnConfig,
                                seed_hosts := SeedHosts,
                                metadata_ts := MetadataTs
                               } = St0, Topic) ->
-  case get_metadata(SeedHosts, ConnectFun, Topic, []) of
+  case get_metadata(SeedHosts, ConnConfig, Topic, []) of
     {ok, {Brokers, Partitions}} ->
       St = lists:foldl(
              fun(Partition, StIn) ->
@@ -228,7 +245,7 @@ do_ensure_leader_connections(#{connect := ConnectFun,
       {error, failed_to_fetch_metadata}
   end.
 
-ensure_leader_connection(#{connect := ConnectFun,
+ensure_leader_connection(#{conn_config := ConnConfig,
                            conns := Connections0
                           } = St0, Brokers, Topic, P_Meta) ->
   Leaders0 = maps:get(leaders, St0, #{}),
@@ -249,9 +266,9 @@ ensure_leader_connection(#{connect := ConnectFun,
       {needs_reconnect, OldConn} ->
         %% delegate to a process to speed up
         ok = close_connection(OldConn),
-        add_conn(ConnectFun(Host), ConnId, Connections0);
+        add_conn(do_connect(Host, ConnConfig), ConnId, Connections0);
       false ->
-        add_conn(ConnectFun(Host), ConnId, Connections0)
+        add_conn(do_connect(Host, ConnConfig), ConnId, Connections0)
     end,
   St = St0#{conns := Connections},
   case Strategy of
@@ -303,8 +320,8 @@ split_config(Config) ->
 get_metadata([], _ConnectFun, _Topic, Errors) ->
   %% failed to connect to ALL seed hosts, crash instead of return {error, Reason}
   {error, Errors};
-get_metadata([Host | Rest], ConnectFun, Topic, Errors) ->
-  case ConnectFun(Host) of
+get_metadata([Host | Rest], ConnConfig, Topic, Errors) ->
+  case do_connect(Host, ConnConfig) of
     {ok, Pid} ->
       try
         {ok, Vsns} = kpro:get_api_versions(Pid),
@@ -314,7 +331,7 @@ get_metadata([Host | Rest], ConnectFun, Topic, Errors) ->
         _ = close_connection(Pid)
       end;
     {error, Reason} ->
-      get_metadata(Rest, ConnectFun, Topic, [{Host, Reason} | Errors])
+      get_metadata(Rest, ConnConfig, Topic, [{Host, Reason} | Errors])
   end.
 
 do_get_metadata(Vsn, Connection, Topic) ->
@@ -344,3 +361,25 @@ parse_broker_meta(BrokerMeta) ->
 
 log_warn(Fmt, Args) -> error_logger:warning_msg(Fmt, Args).
 
+do_connect(Host, ConnConfig) ->
+    kpro:connect(Host, ConnConfig).
+
+%% prior to 1.5.2, the connect config is hidden in an anonymous function
+%% which will cause 'badfun' exception after beam is purged.
+%% this function is to find the connect config from supervisor.
+%% NOTE: only works when it's supervised client.
+upgrade(#{conn_config := _} = St) -> St;
+upgrade(#{connect := _Fun} = St) ->
+  ClientId = maps:get(client_id, St),
+  maps:without([connect], St#{conn_config => find_config(ClientId)}).
+
+find_config(ClientId) ->
+  case supervisor:get_childspec(wolff_client_sup, ClientId) of
+    {ok, ChildSpec} -> get_config(ChildSpec);
+    {error, Reason} -> exit({cannot_find_connection_config, Reason})
+  end.
+
+get_config(#{start := {_Module, _StartLink, Args}}) ->
+    [_ClinetID, _Hosts, Config] = Args,
+    {ConnConfig, _MyConfig} = split_config(Config),
+    ConnConfig.

@@ -35,6 +35,8 @@
          send_sync/3
         ]).
 
+-export([check_connectivity/1]).
+
 %% for test
 -export([get_producer/2]).
 
@@ -129,3 +131,10 @@ send_sync(Producers, Batch, Timeout) ->
 %% @hidden For test only.
 get_producer(Producers, Partition) ->
   wolff_producers:lookup_producer(Producers, Partition).
+
+%% @doc Check if the client is connected to the cluster.
+check_connectivity(ClientId) ->
+    case wolff_client_sup:find_client(ClientId) of
+      {ok, Pid} -> wolff_client:check_connectivity(Pid);
+      {error, Error} -> {error, Error}
+    end.

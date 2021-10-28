@@ -179,35 +179,51 @@ zero_ack_test() ->
   {Partition, BaseOffset} = wolff:send_sync(Producers, [Msg], 3000),
   io:format(user, "\nmessage produced to partition ~p at offset ~p\n",
             [Partition, BaseOffset]),
+  ?assertEqual(-1, BaseOffset),
   ok = wolff:stop_producers(Producers),
   ok = stop_client(Client).
 
 replayq_overflow_test() ->
   ClientCfg = client_config(),
   {ok, Client} = start_client(<<"client-1">>, ?HOSTS, ClientCfg),
-  ProducerCfg = #{replayq_max_total_bytes => 10},
-  {ok, Producers} = wolff:start_producers(Client, <<"test-topic">>, ProducerCfg),
   Msg = #{key => <<>>, value => <<"12345">>},
+  Batch = [Msg, Msg],
+  BatchSize = wolff_producer:batch_bytes(Batch),
+  ProducerCfg = #{max_batch_bytes => 1, %% make sure not collecting calls into one batch
+                  replayq_max_total_bytes => BatchSize,
+                  required_acks => all_isr,
+                  max_linger_ms => 1000 %% do not send to kafka immediately
+                 },
+  {ok, Producers} = wolff:start_producers(Client, <<"test-topic">>, ProducerCfg),
   TesterPid = self(),
   AckFun1 = fun(_Partition, BaseOffset) -> TesterPid ! {ack_1, BaseOffset}, ok end,
   AckFun2 = fun(_Partition, BaseOffset) -> TesterPid ! {ack_2, BaseOffset}, ok end,
-  SendF = fun(AckFun) ->
-    {Partition, BaseOffset} = wolff:send(Producers, [Msg, Msg], AckFun),
-    io:format(user, "\nmessage produced to partition ~p at offset ~p\n",
-                [Partition, BaseOffset])
-  end,
+  SendF = fun(AckFun) -> wolff:send(Producers, Batch, AckFun) end,
+  %% send two batches to overflow one
   spawn(fun() -> SendF(AckFun1) end),
+  timer:sleep(1), %% ensure order
   spawn(fun() -> SendF(AckFun2) end),
-  receive
+  try
+    %% pushed out of replayq due to overflow
+    receive
       {ack_1, buffer_overflow_discarded} -> ok;
-      {ack_1, Other} -> error({unexpected_offset_for_ack_1, Other})
-  end,
-  receive
-      {ack_2, buffer_overflow_discarded} -> error({unexpected_offset_for_ack_1, -1});
-      {ack_2, _Other} -> ok
-  end,
-  ok = wolff:stop_producers(Producers),
-  ok = stop_client(Client).
+      {ack_1, Other} -> error({"unexpected_ack", Other})
+    after
+        2000 ->
+            error(timeout)
+    end,
+    %% the second batch should eventually get the ack
+    receive
+      {ack_2, buffer_overflow_discarded} -> error("unexpected_discard");
+      {ack_2, BaseOffset} -> ?assert(BaseOffset >= 0)
+    after
+        2000 ->
+            error(timeout)
+    end
+  after
+    ok = wolff:stop_producers(Producers),
+    ok = stop_client(Client)
+  end.
 
 mem_only_replayq_test() ->
   ClientCfg = client_config(),
@@ -264,7 +280,50 @@ stats_test() ->
   ?assertEqual(undefined, whereis(wolff_stats)),
   ok.
 
+check_connectivity_test() ->
+  ClientId = <<"client-stats-test">>,
+  _ = application:stop(wolff), %% ensure stopped
+  {ok, _} = application:ensure_all_started(wolff),
+  ClientCfg = client_config(),
+  {ok, Client} = start_client(ClientId, ?HOSTS, ClientCfg),
+  ?assertEqual(ok, wolff:check_connectivity(ClientId)),
+  ok = stop_client(Client),
+  ?assertEqual({error, no_such_client}, wolff:check_connectivity(ClientId)),
+  ok = application:stop(wolff).
+
+
+cliet_state_upgrade_test() ->
+  ClientId = <<"client-stats-test">>,
+  _ = application:stop(wolff), %% ensure stopped
+  {ok, _} = application:ensure_all_started(wolff),
+  ClientCfg = client_config(),
+  {ok, Client} = start_client(ClientId, ?HOSTS, ClientCfg),
+  ?assertEqual(ok, wolff:check_connectivity(ClientId)),
+  timer:sleep(500),
+  ok = verify_state_upgrade(Client, fun() -> _ = wolff_client:get_id(Client) end),
+  ok = verify_state_upgrade(Client, fun() -> Client ! ignore end),
+  ok = verify_state_upgrade(Client, fun() -> gen_server:cast(Client, ignore) end),
+  ok = stop_client(Client),
+  ?assertEqual({error, no_such_client}, wolff:check_connectivity(ClientId)),
+  ok = application:stop(wolff).
+
 %% helpers
+
+%% verify wolff_client state upgrade.
+%% 1. replace the state with old version
+%% 2. assert the replace worked
+%% 3. trigger some activity to the wolff_client pid
+%% 4. check if the state is upgraded to new version
+verify_state_upgrade(Client, F) ->
+  sys:replace_state(Client, fun(St) -> to_old_client_state(St) end),
+  ?assertMatch(#{connect := ConnFun} when is_function(ConnFun), sys:get_state(Client)),
+  _ = F(), %% trigger a handle_call, handle_info or handle_cast which in turn triggers state upgrade
+  ?assertMatch(#{conn_config := _}, sys:get_state(Client)),
+  ok.
+
+to_old_client_state(St0) ->
+  St = maps:without([conn_config], St0),
+  St#{connect => fun() -> error(unexpected) end}.
 
 client_config() -> #{}.
 
@@ -290,4 +349,3 @@ batch_bytes(Batch) ->
 encoded_bytes(Batch) ->
   Encoded = kpro_batch:encode(2, Batch, no_compression),
   iolist_size(Encoded).
-

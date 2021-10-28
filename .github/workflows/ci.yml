@@ -52,5 +52,5 @@ jobs:
     # Tests
     - name: Run tests
       run: |
-          docker-compose up -d
+          ./start-kafka.sh
           make eunit || (cd scripts && docker-compose logs)
