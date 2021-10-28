@@ -38,7 +38,7 @@
       #{client_id := wolff:client_id(),
         seed_hosts := host(),
         config := config(),
-        con_conf := kpro:conn_config(),
+        conn_config := kpro:conn_config(),
         conns := #{conn_id() => connection()},
         metadata_ts := #{topic() => erlang:timestamp()},
         %% only applicable when connection strategy is per_broker
