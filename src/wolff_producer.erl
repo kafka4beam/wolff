@@ -218,7 +218,9 @@ handle_info({msg, Conn, Rsp}, #{conn := Conn} = St0) ->
   end;
 handle_info(?leader_connection(Conn), St0) when is_pid(Conn) ->
   _ = erlang:monitor(process, Conn),
-  St1 = St0#{reconnect_timer => ?no_timer, conn := Conn},
+  St1 = St0#{reconnect_timer => ?no_timer,
+             reconnect_attempts => 0, %% reset counter
+             conn := Conn},
   St2 = get_produce_version(St1),
   St3 = resend_sent_reqs(St2),
   St  = maybe_send_to_kafka(St3),
@@ -421,8 +423,7 @@ handle_kafka_ack(#kpro_rsp{api = produce,
       do_handle_kafka_ack(Ref, BaseOffset, St);
     false ->
       #{topic := Topic, partition := Partition} = St,
-      log_error("~s-~p: Produce response error-code = ~p",
-                [Topic, Partition, ErrorCode]),
+      log_warn(Topic, Partition, "~s-~p: Produce response error-code = ~p", [ErrorCode]),
       erlang:throw(ErrorCode)
   end.
 
@@ -466,9 +467,11 @@ maybe_log_connection_down(_Topic, _Partition, _, to_be_discovered) ->
   %% this is the initial initial state of connection
   ok;
 maybe_log_connection_down(Topic, Partition, Conn, Reason) when is_pid(Conn) ->
-  log_error("Producer ~s-~p: Connection ~p down. Reason: ~p", [Topic, Partition, Conn, Reason]);
+  log_info(Topic, Partition, "lost connection to partition leader, pid=~p, reason=~p", [Conn, Reason]);
+maybe_log_connection_down(Topic, Partition, _, noproc) ->
+  log_info(Topic, Partition, "lost connection to partiton leader", []);
 maybe_log_connection_down(Topic, Partition, _, Reason) ->
-  log_error("Producer ~s-~p: Failed to reconnect. Reason: ~p", [Topic, Partition, Reason]).
+  log_info(Topic, Partition, "lost connection to partition leader, reason=~p", [Reason]).
 
 ensure_delayed_reconnect(#{config := #{reconnect_delay_ms := Delay0},
                            client_id := ClientId,
@@ -476,20 +479,23 @@ ensure_delayed_reconnect(#{config := #{reconnect_delay_ms := Delay0},
                            partition := Partition,
                            reconnect_timer := ?no_timer
                           } = St) ->
+  Attempts = maps:get(reconnect_attempts, St, 0),
+  Attempts > 0 andalso Attempts rem 10 =:= 0 andalso
+    log_error(Topic, Partition, "still disconnected after ~p reconnect attempts", [Attempts]),
   %% add an extra random delay to avoid all partition workers
   %% try to reconnect around the same moment
   Delay = Delay0 + rand:uniform(1000),
   case wolff_client_sup:find_client(ClientId) of
     {ok, ClientPid} ->
       Args = [ClientPid, Topic, Partition, self()],
-      log_info(Topic, Partition, "Will try to rediscover leader connection after ~p ms delay", [Delay]),
+      log_info(Topic, Partition, "will try to rediscover leader connection after ~p ms delay", [Delay]),
       {ok, Tref} = timer:apply_after(Delay, wolff_client, recv_leader_connection, Args),
-      St#{reconnect_timer => Tref};
+      St#{reconnect_timer => Tref, reconnect_attempts => Attempts + 1};
     {error, _Restarting} ->
-      log_info(Topic, Partition, "Will try to rediscover client pid after ~p ms delay", [Delay]),
+      log_info(Topic, Partition, "will try to rediscover client pid after ~p ms delay", [Delay]),
       %% call timer:apply_after for both cases, do not use send_after here
       {ok, Tref} = timer:apply_after(Delay, erlang, send, [self(), ?reconnect]),
-      St#{reconnect_timer => Tref}
+      St#{reconnect_timer => Tref, reconnect_attempts => Attempts + 1}
   end;
 ensure_delayed_reconnect(St) ->
   %% timer already started
@@ -516,7 +522,8 @@ log_info(Topic, Partition, Fmt, Args) ->
 log_warn(Topic, Partition, Fmt, Args) ->
   error_logger:warning_msg("~s-~p: " ++ Fmt, [Topic, Partition | Args]).
 
-log_error(Fmt, Args) -> error_logger:error_msg(Fmt, Args).
+log_error(Topic, Partition, Fmt, Args) ->
+    error_logger:error_msg("~s-~p: " ++ Fmt, [Topic, Partition, Args]).
 
 send_stats(#{client_id := ClientId, topic := Topic, partition := Partition}, Batch) ->
   {Cnt, Oct} =
