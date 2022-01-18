@@ -233,7 +233,7 @@ handle_info(?leader_connection(?conn_error(Reason)), St0) ->
   {noreply, St};
 handle_info(?reconnect, St0) ->
   St = St0#{reconnect_timer => ?no_timer},
-  {noreply, ensure_delayed_reconnect(St)};
+  {noreply, ensure_delayed_reconnect(St, normal_delay)};
 handle_info({'DOWN', _, _, Conn, Reason}, #{conn := Conn} = St0) ->
   %% assert, connection can never down when pending on a reconnect
   #{reconnect_timer := ?no_timer} = St0,
@@ -303,7 +303,10 @@ maybe_send_to_kafka(#{conn := Conn, replayq := Q} = St) ->
       maybe_send_to_kafka_has_pending(St);
     false ->
       %% no connection
-      ensure_delayed_reconnect(St)
+      %% maybe the connection was closed after ideling
+      %% re-connect is triggered immediately if this
+      %% is the first attempt
+      ensure_delayed_reconnect(St, no_delay_for_first_attempt)
   end.
 
 maybe_send_to_kafka_has_pending(St) ->
@@ -447,6 +450,13 @@ do_handle_kafka_ack(Ref, BaseOffset,
       St
   end.
 
+%% @private This function is called in below scenarios
+%% * Failed to connect any of the brokers
+%% * Failed to connect to partition leader
+%% * Connection 'DOWN' due to Kafka initiated soket close
+%% * Produce request failure
+%%   - Socket error
+%%   - Error code received from Kafka
 mark_connection_down(#{topic := Topic,
                        partition := Partition,
                        conn := Old
@@ -456,11 +466,14 @@ mark_connection_down(#{topic := Topic,
   case is_idle(St) of
     true ->
       %% nothing to send, will trigger reconnect later
+      log_info(Topic, Partition, "lost connection to partition leader while idling, "
+                                 "no immediate reconnect, old_state=~p, reason=~p",
+                                 [Old, Reason]),
       St;
     false ->
       maybe_log_connection_down(Topic, Partition, Old, Reason),
       %% ensure delayed reconnect timer is started
-      ensure_delayed_reconnect(St)
+      ensure_delayed_reconnect(St, normal_delay)
   end.
 
 maybe_log_connection_down(_Topic, _Partition, _, to_be_discovered) ->
@@ -478,13 +491,20 @@ ensure_delayed_reconnect(#{config := #{reconnect_delay_ms := Delay0},
                            topic := Topic,
                            partition := Partition,
                            reconnect_timer := ?no_timer
-                          } = St) ->
+                          } = St, DelayStrategy) ->
   Attempts = maps:get(reconnect_attempts, St, 0),
   Attempts > 0 andalso Attempts rem 10 =:= 0 andalso
     log_error(Topic, Partition, "still disconnected after ~p reconnect attempts", [Attempts]),
-  %% add an extra random delay to avoid all partition workers
-  %% try to reconnect around the same moment
-  Delay = Delay0 + rand:uniform(1000),
+  Delay =
+    case DelayStrategy of
+      no_delay_for_first_attempt when Attempts =:= 0 ->
+        %% this is the first attempt after disconnected, no delay
+        0;
+      _ ->
+        %% add an extra random delay to avoid all partition workers
+        %% try to reconnect around the same moment
+        Delay0 + rand:uniform(1000)
+    end,
   case wolff_client_sup:find_client(ClientId) of
     {ok, ClientPid} ->
       Args = [ClientPid, Topic, Partition, self()],
@@ -497,7 +517,7 @@ ensure_delayed_reconnect(#{config := #{reconnect_delay_ms := Delay0},
       {ok, Tref} = timer:apply_after(Delay, erlang, send, [self(), ?reconnect]),
       St#{reconnect_timer => Tref, reconnect_attempts => Attempts + 1}
   end;
-ensure_delayed_reconnect(St) ->
+ensure_delayed_reconnect(St, _Delay) ->
   %% timer already started
   St.
 
