@@ -41,37 +41,35 @@ and automatically rebalance the partitioner.
 ### Sync Produce
 
 ```
-ClientCfg = #{},
-{ok, Client} = wolff:ensure_supervised_client(<<"client-1">>, [{"localhost", 9092}], ClientCfg),
-ProducerCfg = #{replayq_dir => "/tmp/wolff-replayq-1"},
-{ok, Producers} = wolff:start_producers(Client, <<"test-topic">>, ProducerCfg),
-Msg = #{key => <<"key">>, value => <<"value">>},
-{Partition, BaseOffset} = wolff:send_sync(Producers, [Msg], 3000),
+application:ensure_all_started(wolff).
+ClientCfg = #{}.
+{ok, Client} = wolff:ensure_supervised_client(<<"client-1">>, [{"localhost", 9092}], ClientCfg).
+ProducerCfg = #{replayq_dir => "/tmp/wolff-replayq-1"}.
+{ok, Producers} = wolff:start_producers(Client, <<"test-topic">>, ProducerCfg).
+Msg = #{key => <<"key">>, value => <<"value">>}.
+{Partition, BaseOffset} = wolff:send_sync(Producers, [Msg], 3000).
 io:format(user, "\nmessage produced to partition ~p at offset ~p\n",
-          [Partition, BaseOffset]),
-ok = wolff:stop_producers(Producers),
+          [Partition, BaseOffset]).
+ok = wolff:stop_producers(Producers).
 ok = wolff:stop_client(Client).
 ```
 
 ### Async Produce with Callback
 
 ```
-ClientCfg = #{},
-{ok, Client} = wolff:ensure_supervised_client(<<"client-2">>, [{"localhost", 9092}], ClientCfg),
-ProducerCfg = #{replayq_dir => "/tmp/wolff-replayq-2"}
-{ok, Producers} = wolff:start_producers(Client, <<"test-topic">>, ProducerCfg),
-Msg = #{headers => [{<<"foo">>, <<"bar">>}], key => <<"key">>, value => <<"value">>},
-Self = self(),
+application:ensure_all_started(wolff).
+ClientCfg = #{}.
+{ok, Client} = wolff:ensure_supervised_client(<<"client-2">>, [{"localhost", 9092}], ClientCfg).
+ProducerCfg = #{replayq_dir => "/tmp/wolff-replayq-2"}.
+{ok, Producers} = wolff:start_producers(Client, <<"test-topic">>, ProducerCfg).
+Msg = #{headers => [{<<"foo">>, <<"bar">>}], key => <<"key">>, value => <<"value">>}.
+Self = self().
 AckFun = fun(Partition, BaseOffset) ->
             io:format(user, "\nmessage produced to partition ~p at offset ~p\n",
                       [Partition, BaseOffset]),
-            Self ! acked,
             ok
-         end,
-{_Partition, _ProducerPid} = wolff:send(Producers, [Msg], AckFun),
-receive acked -> ok end,
-ok = wolff:stop_producers(Producers),
-ok = wolff:stop_client(Client).
+         end.
+wolff:send(Producers, [Msg], AckFun).
 ```
 
 For upgrade safety, it's recommended to avoid using anonymous function as ack callback.
@@ -95,23 +93,19 @@ handle_ack(Partition, Offset, Caller) ->
 
 ```
 application:ensure_all_started(wolff).
-Client = <<"client-1">>,
-ClientCfg = #{},
-{ok, _ClientPid} = wolff:ensure_supervised_client(Client, [{"localhost", 9092}], ClientCfg),
-ProducerCfg = #{replayq_dir => "/tmp/wolff-replayq-3"},
-{ok, Producers} = wolff:ensure_supervised_producers(Client, <<"test-topic">>, ProducerCfg),
-Msg = #{headers => [{<<"foo">>, <<"bar">>}], key => <<"key">>, value => <<"value">>},
-Self = self(),
+Client = <<"client-1">>.
+ClientCfg = #{}.
+{ok, _ClientPid} = wolff:ensure_supervised_client(Client, [{"localhost", 9092}], ClientCfg).
+ProducerCfg = #{replayq_dir => "/tmp/wolff-replayq-3"}.
+{ok, Producers} = wolff:ensure_supervised_producers(Client, <<"test-topic">>, ProducerCfg).
+Msg = #{headers => [{<<"foo">>, <<"bar">>}], key => <<"key">>, value => <<"value">>}.
+Self = self().
 AckFun = fun(Partition, BaseOffset) ->
             io:format(user, "\nmessage produced to partition ~p at offset ~p\n",
                       [Partition, BaseOffset]),
-            Self ! acked,
             ok
-         end,
-{_Partition, _ProducerPid} = wolff:send(Producers, [Msg], AckFun),
-receive acked -> ok end,
-ok = wolff:stop_and_delete_supervised_producers(Producers),
-ok = wolff:stop_and_delete_supervised_client(Client).
+         end.
+wolff:send(Producers, [Msg], AckFun).
 ```
 
 ## Client Config

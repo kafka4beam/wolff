@@ -166,7 +166,12 @@ do_init(#{client_id := ClientId,
                          marshaller => fun ?MODULE:queue_item_marshaller/1,
                          max_total_bytes => MaxTotalBytes
                         }),
-  %% send the connection to self
+  %% The initial connect attempt is made by the caller (wolff_producers.erl)
+  %% If succeeded, `Conn' is a pid (but it may as well dead by now),
+  %% if failed, it's a `term()' to indicate the failure reason.
+  %% Send it to self regardless of failure, retry timer should be started
+  %% when the message is received (same handling as in when `DOWN' message is
+  %% received after a normal start)
   _ = erlang:send(self(), ?leader_connection(Conn)),
   %% replayq configs are kept in Q, there is no need to duplicate them
   Config = maps:without([replayq_dir, replayq_seg_bytes], Config0),
