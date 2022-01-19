@@ -224,7 +224,9 @@ handle_info({msg, Conn, Rsp}, #{conn := Conn} = St0) ->
 handle_info(?leader_connection(Conn), #{topic := Topic,
                                         partition := Partition
                                        } = St0) when is_pid(Conn) ->
-  log_info(Topic, Partition, "partition leader connected: ~0p", [Conn]),
+  Attempts = maps:get(reconnect_attempts, St0, 0),
+  Attempts > 0 andalso
+    log_info(Topic, Partition, "partition leader reconnected: ~0p", [Conn]),
   _ = erlang:monitor(process, Conn),
   St1 = St0#{reconnect_timer => ?no_timer,
              reconnect_attempts => 0, %% reset counter
