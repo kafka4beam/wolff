@@ -216,7 +216,10 @@ handle_info({msg, Conn, Rsp}, #{conn := Conn} = St0) ->
       St = mark_connection_down(St0, Reason),
       {noreply, St}
   end;
-handle_info(?leader_connection(Conn), St0) when is_pid(Conn) ->
+handle_info(?leader_connection(Conn), #{topic := Topic,
+                                        partition := Partition
+                                       } = St0) when is_pid(Conn) ->
+  log_info(Topic, Partition, "partition leader connected: ~0p", [Conn]),
   _ = erlang:monitor(process, Conn),
   St1 = St0#{reconnect_timer => ?no_timer,
              reconnect_attempts => 0, %% reset counter
@@ -233,7 +236,7 @@ handle_info(?leader_connection(?conn_error(Reason)), St0) ->
   {noreply, St};
 handle_info(?reconnect, St0) ->
   St = St0#{reconnect_timer => ?no_timer},
-  {noreply, ensure_delayed_reconnect(St)};
+  {noreply, ensure_delayed_reconnect(St, normal_delay)};
 handle_info({'DOWN', _, _, Conn, Reason}, #{conn := Conn} = St0) ->
   %% assert, connection can never down when pending on a reconnect
   #{reconnect_timer := ?no_timer} = St0,
@@ -303,7 +306,10 @@ maybe_send_to_kafka(#{conn := Conn, replayq := Q} = St) ->
       maybe_send_to_kafka_has_pending(St);
     false ->
       %% no connection
-      ensure_delayed_reconnect(St)
+      %% maybe the connection was closed after ideling
+      %% re-connect is triggered immediately if this
+      %% is the first attempt
+      ensure_delayed_reconnect(St, no_delay_for_first_attempt)
   end.
 
 maybe_send_to_kafka_has_pending(St) ->
@@ -423,7 +429,7 @@ handle_kafka_ack(#kpro_rsp{api = produce,
       do_handle_kafka_ack(Ref, BaseOffset, St);
     false ->
       #{topic := Topic, partition := Partition} = St,
-      log_warn(Topic, Partition, "~s-~p: Produce response error-code = ~p", [ErrorCode]),
+      log_warn(Topic, Partition, "~s-~p: Produce response error-code = ~0p", [ErrorCode]),
       erlang:throw(ErrorCode)
   end.
 
@@ -447,57 +453,69 @@ do_handle_kafka_ack(Ref, BaseOffset,
       St
   end.
 
+%% @private This function is called in below scenarios
+%% * Failed to connect any of the brokers
+%% * Failed to connect to partition leader
+%% * Connection 'DOWN' due to Kafka initiated soket close
+%% * Produce request failure
+%%   - Socket error
+%%   - Error code received from Kafka
 mark_connection_down(#{topic := Topic,
                        partition := Partition,
                        conn := Old
                       } = St0, Reason) ->
   false = is_pid(Reason),
   St = St0#{conn := Reason},
+  ok = log_connection_down(Topic, Partition, Old, Reason),
   case is_idle(St) of
     true ->
-      %% nothing to send, will trigger reconnect later
       St;
     false ->
-      maybe_log_connection_down(Topic, Partition, Old, Reason),
       %% ensure delayed reconnect timer is started
-      ensure_delayed_reconnect(St)
+      ensure_delayed_reconnect(St, normal_delay)
   end.
 
-maybe_log_connection_down(_Topic, _Partition, _, to_be_discovered) ->
-  %% this is the initial initial state of connection
+log_connection_down(_Topic, _Partition, _, to_be_discovered) ->
+  %% this is the initial state of the connection
   ok;
-maybe_log_connection_down(Topic, Partition, Conn, Reason) when is_pid(Conn) ->
-  log_info(Topic, Partition, "lost connection to partition leader, pid=~p, reason=~p", [Conn, Reason]);
-maybe_log_connection_down(Topic, Partition, _, noproc) ->
-  log_info(Topic, Partition, "lost connection to partiton leader", []);
-maybe_log_connection_down(Topic, Partition, _, Reason) ->
-  log_info(Topic, Partition, "lost connection to partition leader, reason=~p", [Reason]).
+log_connection_down(Topic, Partition, Conn, Reason) when is_pid(Conn) ->
+  log_info(Topic, Partition, "connection to partition leader is down, pid=~p, reason=~0p", [Conn, Reason]);
+log_connection_down(Topic, Partition, _, noproc) ->
+  log_info(Topic, Partition, "connection to partition leader is down, pending on reconnect", []);
+log_connection_down(Topic, Partition, _, Reason) ->
+  log_info(Topic, Partition, "connection to partition leader is down, reason=~p", [Reason]).
 
 ensure_delayed_reconnect(#{config := #{reconnect_delay_ms := Delay0},
                            client_id := ClientId,
                            topic := Topic,
                            partition := Partition,
                            reconnect_timer := ?no_timer
-                          } = St) ->
+                          } = St, DelayStrategy) ->
   Attempts = maps:get(reconnect_attempts, St, 0),
   Attempts > 0 andalso Attempts rem 10 =:= 0 andalso
     log_error(Topic, Partition, "still disconnected after ~p reconnect attempts", [Attempts]),
-  %% add an extra random delay to avoid all partition workers
-  %% try to reconnect around the same moment
-  Delay = Delay0 + rand:uniform(1000),
+  Delay =
+    case DelayStrategy of
+      no_delay_for_first_attempt when Attempts =:= 0 ->
+        %% this is the first attempt after disconnected, no delay
+        0;
+      _ ->
+        %% add an extra random delay to avoid all partition workers
+        %% try to reconnect around the same moment
+        Delay0 + rand:uniform(1000)
+    end,
   case wolff_client_sup:find_client(ClientId) of
     {ok, ClientPid} ->
       Args = [ClientPid, Topic, Partition, self()],
-      log_info(Topic, Partition, "will try to rediscover leader connection after ~p ms delay", [Delay]),
       {ok, Tref} = timer:apply_after(Delay, wolff_client, recv_leader_connection, Args),
       St#{reconnect_timer => Tref, reconnect_attempts => Attempts + 1};
     {error, _Restarting} ->
-      log_info(Topic, Partition, "will try to rediscover client pid after ~p ms delay", [Delay]),
+      log_warn(Topic, Partition, "client down, will try to rediscover client pid after ~p ms delay", [Delay]),
       %% call timer:apply_after for both cases, do not use send_after here
       {ok, Tref} = timer:apply_after(Delay, erlang, send, [self(), ?reconnect]),
       St#{reconnect_timer => Tref, reconnect_attempts => Attempts + 1}
   end;
-ensure_delayed_reconnect(St) ->
+ensure_delayed_reconnect(St, _Delay) ->
   %% timer already started
   St.
 
