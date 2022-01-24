@@ -45,6 +45,9 @@ jobs:
         otp-version: ${{matrix.otp}}
         rebar3-version: '3.17.0'
 
+    # Check versions and syntax of app and appup
+    - name: Ensure version consistency
+      run: ./check-vsns.escript
     # Compile
     - name: Compile
       run: |
@@ -54,3 +57,4 @@ jobs:
       run: |
           ./start-kafka.sh
           make eunit || (cd scripts && docker-compose logs)
+
