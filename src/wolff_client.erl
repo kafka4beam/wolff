@@ -251,8 +251,8 @@ ensure_leader_connection(#{conn_config := ConnConfig,
   Leaders0 = maps:get(leaders, St0, #{}),
   ErrorCode = kpro:find(error_code, P_Meta),
   ErrorCode =:= ?no_error orelse erlang:error(ErrorCode),
-  PartitionNum = kpro:find(partition, P_Meta),
-  LeaderBrokerId = kpro:find(leader, P_Meta),
+  PartitionNum = kpro:find(partition_index, P_Meta),
+  LeaderBrokerId = kpro:find(leader_id, P_Meta),
   {_, Host} = lists:keyfind(LeaderBrokerId, 1, Brokers),
   Strategy = get_connection_strategy(St0),
   ConnId = case Strategy of
@@ -335,15 +335,14 @@ get_metadata([Host | Rest], ConnConfig, Topic, Errors) ->
   end.
 
 do_get_metadata(Vsn, Connection, Topic) ->
-  Req = kpro:make_request(metadata, Vsn, [{topics, [Topic]},
-                                          {allow_auto_topic_creation, false}]),
+  Req = kpro_req_lib:metadata(Vsn, [Topic], _IsAutoCreateAllowed = false),
   case kpro:request_sync(Connection, Req, ?DEFAULT_METADATA_TIMEOUT) of
     {ok, #kpro_rsp{msg = Meta}} ->
       BrokersMeta = kpro:find(brokers, Meta),
       Brokers = [parse_broker_meta(M) || M <- BrokersMeta],
-      [TopicMeta] = kpro:find(topic_metadata, Meta),
+      [TopicMeta] = kpro:find(topics, Meta),
       ErrorCode = kpro:find(error_code, TopicMeta),
-      Partitions = kpro:find(partition_metadata, TopicMeta),
+      Partitions = kpro:find(partitions, TopicMeta),
       case ErrorCode =:= ?no_error of
         true  -> {ok, {Brokers, Partitions}};
         false -> {error, ErrorCode} %% no such topic ?
