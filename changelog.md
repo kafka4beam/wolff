@@ -1,5 +1,6 @@
 * 1.6.0
   - Enhancement: upgrade dependencies, kafka_protocol-4.0.2 and replayq-0.3.3
+  - Refactor: replaced error_logger with logger
 * 1.5.4
   - Fix: no delay before the first re-connect attempt after disconnected while idling.
 * 1.5.3

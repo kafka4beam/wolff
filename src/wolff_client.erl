@@ -235,13 +235,14 @@ do_ensure_leader_connections(#{conn_config := ConnConfig,
                    ensure_leader_connection(StIn, Brokers, Topic, Partition)
                  catch
                    error : Reason ->
-                     log_warn("Bad metadata for ~p-~p\nreason=~p", [Topic, Partition, Reason]),
+                     log_warn("bad_topic_partition_metadata",
+                              #{topic => Topic, partiton => Partition, reason => Reason}),
                      StIn
                  end
              end, St0, Partitions),
       {ok, St#{metadata_ts := MetadataTs#{Topic => erlang:timestamp()}}};
-    {error, Reason} ->
-      log_warn("Failed to get metadata\nreason: ~p", [Reason]),
+    {error, Errors} ->
+      log_warn(failed_to_fetch_metadata, #{topic => Topic, errors => Errors}),
       {error, failed_to_fetch_metadata}
   end.
 
@@ -331,7 +332,7 @@ get_metadata([Host | Rest], ConnConfig, Topic, Errors) ->
         _ = close_connection(Pid)
       end;
     {error, Reason} ->
-      get_metadata(Rest, ConnConfig, Topic, [{Host, Reason} | Errors])
+      get_metadata(Rest, ConnConfig, Topic, [#{host => Host, reason => Reason} | Errors])
   end.
 
 do_get_metadata(Vsn, Connection, Topic) ->
@@ -358,7 +359,7 @@ parse_broker_meta(BrokerMeta) ->
   Port = kpro:find(port, BrokerMeta),
   {BrokerId, {Host, Port}}.
 
-log_warn(Fmt, Args) -> error_logger:warning_msg(Fmt, Args).
+log_warn(Msg, Report) -> logger:warning(Report#{msg => Msg}).
 
 do_connect(Host, ConnConfig) ->
     kpro:connect(Host, ConnConfig).
