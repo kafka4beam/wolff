@@ -42,3 +42,7 @@ cover:
 .PHONY: coveralls
 coveralls:
 	@rebar3 coveralls send
+
+hex-publish: clean
+	@rebar3 hex publish
+	@rebar3 hex docs
