@@ -226,7 +226,7 @@ handle_info(?leader_connection(Conn), #{topic := Topic,
                                        } = St0) when is_pid(Conn) ->
   Attempts = maps:get(reconnect_attempts, St0, 0),
   Attempts > 0 andalso
-    log_info(Topic, Partition, "partition leader reconnected: ~0p", [Conn]),
+    log_info(Topic, Partition, "partition_leader_reconnected", #{conn_pid => Conn}),
   _ = erlang:monitor(process, Conn),
   St1 = St0#{reconnect_timer => ?no_timer,
              reconnect_attempts => 0, %% reset counter
@@ -436,7 +436,9 @@ handle_kafka_ack(#kpro_rsp{api = produce,
       do_handle_kafka_ack(Ref, BaseOffset, St);
     false ->
       #{topic := Topic, partition := Partition} = St,
-      log_warn(Topic, Partition, "~s-~p: Produce response error-code = ~0p", [ErrorCode]),
+      log_warn(Topic, Partition,
+               "error_in_produce_response",
+               #{error_code => ErrorCode}),
       erlang:throw(ErrorCode)
   end.
 
@@ -485,12 +487,10 @@ mark_connection_down(#{topic := Topic,
 log_connection_down(_Topic, _Partition, _, to_be_discovered) ->
   %% this is the initial state of the connection
   ok;
-log_connection_down(Topic, Partition, Conn, Reason) when is_pid(Conn) ->
-  log_info(Topic, Partition, "connection to partition leader is down, pid=~p, reason=~0p", [Conn, Reason]);
-log_connection_down(Topic, Partition, _, noproc) ->
-  log_info(Topic, Partition, "connection to partition leader is down, pending on reconnect", []);
-log_connection_down(Topic, Partition, _, Reason) ->
-  log_info(Topic, Partition, "connection to partition leader is down, reason=~p", [Reason]).
+log_connection_down(Topic, Partition, Conn, Reason) ->
+  log_info(Topic, Partition,
+           "connection_to_partition_leader_error",
+           #{conn => Conn, reason => Reason}).
 
 ensure_delayed_reconnect(#{config := #{reconnect_delay_ms := Delay0},
                            client_id := ClientId,
@@ -500,7 +500,9 @@ ensure_delayed_reconnect(#{config := #{reconnect_delay_ms := Delay0},
                           } = St, DelayStrategy) ->
   Attempts = maps:get(reconnect_attempts, St, 0),
   Attempts > 0 andalso Attempts rem 10 =:= 0 andalso
-    log_error(Topic, Partition, "still disconnected after ~p reconnect attempts", [Attempts]),
+    log_error(Topic, Partition,
+              "producer_is_still_disconnected_after_retry",
+              #{attempts => Attempts}),
   Delay =
     case DelayStrategy of
       no_delay_for_first_attempt when Attempts =:= 0 ->
@@ -516,8 +518,10 @@ ensure_delayed_reconnect(#{config := #{reconnect_delay_ms := Delay0},
       Args = [ClientPid, Topic, Partition, self()],
       {ok, Tref} = timer:apply_after(Delay, wolff_client, recv_leader_connection, Args),
       St#{reconnect_timer => Tref, reconnect_attempts => Attempts + 1};
-    {error, _Restarting} ->
-      log_warn(Topic, Partition, "client down, will try to rediscover client pid after ~p ms delay", [Delay]),
+    {error, Reason} ->
+      log_warn(Topic, Partition,
+               "failed_to_find_client_will_retry_after_delay",
+               #{delay => Delay, reason => Reason}),
       %% call timer:apply_after for both cases, do not use send_after here
       {ok, Tref} = timer:apply_after(Delay, erlang, send, [self(), ?reconnect]),
       St#{reconnect_timer => Tref, reconnect_attempts => Attempts + 1}
@@ -541,14 +545,17 @@ evaluate_pending_ack_funs(PendingAcks, [{CallId, BatchSize} | Rest], BaseOffset)
 offset(BaseOffset, Delta) when is_integer(BaseOffset) andalso BaseOffset >= 0 -> BaseOffset + Delta;
 offset(BaseOffset, _Delta) -> BaseOffset.
 
-log_info(Topic, Partition, Fmt, Args) ->
-  error_logger:info_msg("~s-~p: " ++ Fmt, [Topic, Partition | Args]).
+log_info(Topic, Partition, Msg, Args) ->
+  log(info, Args#{topic => Topic, partition => Partition, msg => Msg}).
 
-log_warn(Topic, Partition, Fmt, Args) ->
-  error_logger:warning_msg("~s-~p: " ++ Fmt, [Topic, Partition | Args]).
+log_warn(Topic, Partition, Msg, Args) ->
+  log(warning, Args#{topic => Topic, partition => Partition, msg => Msg}).
 
-log_error(Topic, Partition, Fmt, Args) ->
-    error_logger:error_msg("~s-~p: " ++ Fmt, [Topic, Partition, Args]).
+log_error(Topic, Partition, Msg, Args) ->
+  log(error, Args#{topic => Topic, partition => Partition, msg => Msg}).
+
+log(Level, Report) ->
+    logger:log(Level, Report).
 
 send_stats(#{client_id := ClientId, topic := Topic, partition := Partition}, Batch) ->
   {Cnt, Oct} =
@@ -684,7 +691,9 @@ maybe_log_discard(#{topic := Topic, partition := Partition}, Increment,
   DiffCnt = NewAccCnt - LastCnt,
   case NowTs - LastTs > ?MIN_DISCARD_LOG_INTERVAL of
     true ->
-      log_warn(Topic, Partition, "replayq_overflow_dropped_number_of_requests ~p", [DiffCnt]),
+      log_warn(Topic, Partition,
+               "replayq_overflow_dropped_produce_calls",
+               #{count => DiffCnt}),
       put_overflow_log_state(NowTs, NewAccCnt, NewAccCnt);
     false ->
       put_overflow_log_state(LastTs, LastCnt, NewAccCnt)

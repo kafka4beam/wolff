@@ -217,7 +217,8 @@ handle_info(?rediscover_client, #{client_id := ClientId,
       St = maybe_restart_producers(St3),
       {noreply, St};
     {error, Reason} ->
-      log_error("Failed to discover client, reason = ~p", [Reason]),
+      log_error("failed_to_discover_client",
+                #{reason => Reason, client_id => ClientId}),
       {noreply, ensure_rediscover_client_timer(St1)}
   end;
 handle_info(?init_producers, St) ->
@@ -226,7 +227,9 @@ handle_info(?init_producers, St) ->
 handle_info({'DOWN', _, process, Pid, Reason}, #{client_id := ClientId,
                                                  client_pid := Pid
                                                 } = St) ->
-  log_error("Client ~p (pid = ~p) down, reason: ~p", [ClientId, Pid, Reason]),
+  log_error("client_pid_down", #{client_id => ClientId,
+                                 client_pid => Pid,
+                                 reason => Reason}),
   %% client down, try to discover it after a delay
   %% producers should all monitor client pid,
   %% expect their 'EXIT' signals soon
@@ -240,12 +243,16 @@ handle_info({'EXIT', Pid, Reason},
              } = St) ->
   case ets:match(Ets, {'$1', Pid}) of
     [] ->
-      log_error("Unknown EXIT message of pid ~p reason: ~p", [Pid, Reason]);
+      %% this should not happen, hence error level
+      log_error("unknown_EXIT_message", #{pid => Pid, reason => Reason});
     [[Partition]] ->
       case is_alive(ClientPid) of
         true ->
-          log_error("Producer ~s-~p (pid = ~p) down\nreason: ~p",
-                    [Topic, Partition, Pid, Reason]),
+          %% wolff_producer is not designed to crash & restart
+          %% if this happens, it's likely a bug in wolff_producer module
+          log_error("producer_down",
+                    #{topic => Topic, partition => Partition,
+                      partition_worker => Pid, reason => Reason}),
           ok = start_producer_and_insert_pid(Ets, ClientId, Topic, Partition, Config);
         false ->
           %% no client, restart will be triggered when client connection is back.
@@ -254,17 +261,17 @@ handle_info({'EXIT', Pid, Reason},
   end,
   {noreply, St};
 handle_info(Info, St) ->
-  log_error("Unknown info ~p", [Info]),
+  log_error("unknown_info", #{info => Info}),
   {noreply, St}.
 
 handle_call(get_workers, _From, #{ets := Ets} = St) ->
   {reply, Ets, St};
 handle_call(Call, From, St) ->
-  log_error("Unknown call ~p from ~p", [Call, From]),
+  log_error("unknown_call", #{call => Call, from => From}),
   {reply, {error, unknown_call}, St}.
 
 handle_cast(Cast, St) ->
-  log_error("Unknown cast ~p", [Cast]),
+  log_error("unknown_cast", #{cast => Cast}),
   {noreply, St}.
 
 code_change(_OldVsn, St, _Extra) ->
@@ -276,11 +283,13 @@ ensure_rediscover_client_timer(#{?rediscover_client_tref := false} = St) ->
   Tref = erlang:send_after(?rediscover_client_delay, self(), ?rediscover_client),
   St#{?rediscover_client_tref := Tref}.
 
-log_error(Fmt, Args) -> error_logger:error_msg(Fmt, Args).
+log(Level, Msg, Args) -> logger:log(Level, Args#{msg => Msg}).
 
-log_warning(Fmt, Args) -> error_logger:warning_msg(Fmt, Args).
+log_error(Msg, Args) -> log(error, Msg, Args).
 
-log_info(Fmt, Args) -> error_logger:info_msg(Fmt, Args).
+log_warning(Msg, Args) -> log(warning, Msg, Args).
+
+log_info(Msg, Args) -> log(info, Msg, Args).
 
 start_link_producers(ClientId, Topic, Connections, Config) ->
   lists:foldl(
@@ -302,8 +311,7 @@ maybe_init_producers(#{ets := ?not_initialized,
       true = ets:insert(Ets, maps:to_list(Workers)),
       St#{ets := Ets};
     {error, Reason} ->
-      log_error("Failed to init producers for topic ~s, reason: ~p",
-                [Topic, Reason]),
+      log_error("failed_to_init_producers", #{topic => Topic, reason => Reason}),
       erlang:send_after(?init_producers_delay, self(), ?init_producers),
       St
   end;
@@ -356,7 +364,8 @@ refresh_partition_count(#{client_pid := Pid, topic := Topic} = St) ->
     {ok, Connections} ->
       start_new_producers(St, Connections);
     {error, Reason} ->
-      log_warning("failed_to_refresh_partition_count topic:~s, reason; ~p", [Topic, Reason]),
+      log_warning("failed_to_refresh_partition_count_will_retry",
+                  #{topic => Topic, reason => Reason}),
       St
   end.
 
@@ -373,7 +382,8 @@ start_new_producers(#{client_id := ClientId,
   true = (length(Connections0) >= partition_cnt(ClientId, Topic)), %% assert
   case maps:size(Workers) > 0 of
     true ->
-      log_info("started_producers_for_newly_discovered_partitions count: ~p", [Workers]),
+      log_info("started_producers_for_newly_discovered_partitions",
+               #{workers => Workers}),
       ok = put_partition_cnt(ClientId, Topic, length(Connections0));
     false ->
       ok
