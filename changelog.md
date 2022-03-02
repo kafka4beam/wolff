@@ -1,3 +1,8 @@
+* 1.5.5
+  - Fix: better error logs (PR #16)
+    * No need to report stacktrace for timeout and connection refused errors.
+    * Report host:port in connection failure reasons.
+    * Fixed a bad logging arg which causes failure attempts to be logged as strings
 * 1.5.4
   - Fix: no delay before the first re-connect attempt after disconnected while idling.
 * 1.5.3

@@ -548,7 +548,7 @@ log_warn(Topic, Partition, Fmt, Args) ->
   error_logger:warning_msg("~s-~p: " ++ Fmt, [Topic, Partition | Args]).
 
 log_error(Topic, Partition, Fmt, Args) ->
-    error_logger:error_msg("~s-~p: " ++ Fmt, [Topic, Partition, Args]).
+    error_logger:error_msg("~s-~p: " ++ Fmt, [Topic, Partition | Args]).
 
 send_stats(#{client_id := ClientId, topic := Topic, partition := Partition}, Batch) ->
   {Cnt, Oct} =

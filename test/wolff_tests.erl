@@ -292,7 +292,7 @@ check_connectivity_test() ->
   ok = application:stop(wolff).
 
 
-cliet_state_upgrade_test() ->
+client_state_upgrade_test() ->
   ClientId = <<"client-stats-test">>,
   _ = application:stop(wolff), %% ensure stopped
   {ok, _} = application:ensure_all_started(wolff),
@@ -305,6 +305,19 @@ cliet_state_upgrade_test() ->
   ok = verify_state_upgrade(Client, fun() -> gen_server:cast(Client, ignore) end),
   ok = stop_client(Client),
   ?assertEqual({error, no_such_client}, wolff:check_connectivity(ClientId)),
+  ok = application:stop(wolff).
+
+fail_to_connect_all_test() ->
+  ClientId = <<"fail-to-connect-test">>,
+  _ = application:stop(wolff), %% ensure stopped
+  {ok, _} = application:ensure_all_started(wolff),
+  ClientCfg = client_config(),
+  Hosts = [{localhost, 9999}, {<<"localhost">>, 9999}],
+  {ok, Client} = start_client(ClientId, Hosts, ClientCfg),
+  ?assertEqual({error, failed_to_fetch_metadata},
+               wolff_client:get_leader_connections(Client, <<"test-topic">>)),
+  Error = {<<"localhost:9999">>, connection_refused},
+  ?assertEqual({error, [Error, Error]}, wolff:check_connectivity(ClientId)),
   ok = application:stop(wolff).
 
 %% helpers
