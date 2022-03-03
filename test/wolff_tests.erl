@@ -321,12 +321,12 @@ fail_to_connect_all_test() ->
   {ok, Client} = start_client(ClientId, Hosts, ClientCfg),
   ?assertEqual({error, failed_to_fetch_metadata},
                wolff_client:get_leader_connections(Client, <<"test-topic">>)),
-  Refuse = {<<"localhost:9999">>, connection_refused},
+  Refuse = #{host => <<"localhost:9999">>, reason => connection_refused},
   {error, Errors} = wolff:check_connectivity(ClientId),
-  ?assertMatch([{<<"1.2.3.4:9999">>, connection_timed_out},
-                {<<"127.0.0:9999">>, unreachable_host},
+  ?assertMatch([#{host := <<"1.2.3.4:9999">>, reason := connection_timed_out},
+                #{host := <<"127.0.0:9999">>, reason := unreachable_host},
                 Refuse, Refuse,
-                {<<"{127,0,0}:9999">>, _}
+                #{host := <<"{127,0,0}:9999">>}
                 ],
                lists:sort(Errors)),
   ok = application:stop(wolff).
