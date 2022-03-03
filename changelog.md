@@ -1,5 +1,6 @@
 * 1.5.5
-  - Fix: better error logs (PR #16)
+  - Enhance: expose wolff_client:check_connectivity/2 for connectivity check before starting a client. (PR #18)
+  - Fix: better error logs (PR #16, PR #17)
     * No need to report stacktrace for timeout and connection refused errors.
     * Report host:port in connection failure reasons.
     * Fixed a bad logging arg which causes failure attempts to be logged as strings

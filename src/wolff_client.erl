@@ -20,7 +20,7 @@
 %% APIs
 -export([start_link/3, stop/1]).
 -export([get_leader_connections/2, recv_leader_connection/4, get_id/1, delete_producers_metadata/2]).
--export([check_connectivity/1]).
+-export([check_connectivity/1, check_connectivity/2]).
 
 %% gen_server callbacks
 -export([code_change/3, handle_call/3, handle_cast/2, handle_info/2, init/1, terminate/2]).
@@ -36,7 +36,7 @@
 
 -type state() ::
       #{client_id := wolff:client_id(),
-        seed_hosts := host(),
+        seed_hosts := [host()],
         config := config(),
         conn_config := kpro:conn_config(),
         conns := #{conn_id() => connection()},
@@ -93,6 +93,16 @@ get_leader_connections(Client, Topic) ->
 check_connectivity(Pid) ->
   safe_call(Pid, check_connectivity).
 
+-spec check_connectivity([host()], kpro:conn_config()) -> ok | {error, any()}.
+check_connectivity(Hosts, ConnConfig) ->
+    case kpro:connect_any(Hosts, ConnConfig) of
+        {ok, Conn} ->
+            close_connection(Conn),
+            ok;
+        {error, Reasons} ->
+            {error, tr_reasons(Reasons)}
+    end.
+
 safe_call(Pid, Call) ->
   try gen_server:call(Pid, Call, infinity)
   catch error : Reason -> {error, Reason}
@@ -126,10 +136,7 @@ handle_call(stop, From, #{conns := Conns} = St) ->
   gen_server:reply(From, ok),
   {stop, normal, St#{conns := #{}}};
 handle_call(check_connectivity, _From, #{seed_hosts := Hosts, conn_config := ConnConfig} = St) ->
-  Res = case kpro:connect_any(Hosts, ConnConfig) of
-          {ok, Conn} -> ok = close_connection(Conn);
-          {error, Reasons} ->  {error, tr_reasons(Reasons)}
-        end,
+  Res = check_connectivity(Hosts, ConnConfig),
   {reply, Res, St};
 handle_call(_Call, _From, St) ->
   {noreply, St}.
