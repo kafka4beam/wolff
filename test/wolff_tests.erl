@@ -311,13 +311,24 @@ fail_to_connect_all_test() ->
   ClientId = <<"fail-to-connect-test">>,
   _ = application:stop(wolff), %% ensure stopped
   {ok, _} = application:ensure_all_started(wolff),
-  ClientCfg = client_config(),
-  Hosts = [{localhost, 9999}, {<<"localhost">>, 9999}],
+  ClientCfg = #{connect_timeout => 500},
+  Hosts = [{localhost, 9999},
+           {<<"localhost">>, 9999},
+           {{1, 2, 3, 4}, 9999}, %% timeout
+           {{127, 0, 0}, 9999}, %% invalid type, cause crash but catched
+           {"127.0.0", 9999} %% invalid ip
+          ],
   {ok, Client} = start_client(ClientId, Hosts, ClientCfg),
   ?assertEqual({error, failed_to_fetch_metadata},
                wolff_client:get_leader_connections(Client, <<"test-topic">>)),
-  Error = {<<"localhost:9999">>, connection_refused},
-  ?assertEqual({error, [Error, Error]}, wolff:check_connectivity(ClientId)),
+  Refuse = {<<"localhost:9999">>, connection_refused},
+  {error, Errors} = wolff:check_connectivity(ClientId),
+  ?assertMatch([{<<"1.2.3.4:9999">>, connection_timed_out},
+                {<<"127.0.0:9999">>, unreachable_host},
+                Refuse, Refuse,
+                {<<"{127,0,0}:9999">>, _}
+                ],
+               lists:sort(Errors)),
   ok = application:stop(wolff).
 
 %% helpers
