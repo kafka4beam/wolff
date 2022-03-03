@@ -35,7 +35,7 @@
          send_sync/3
         ]).
 
--export([check_connectivity/1]).
+-export([check_connectivity/1, check_connectivity/2]).
 
 %% for test
 -export([get_producer/2]).
@@ -133,8 +133,16 @@ get_producer(Producers, Partition) ->
   wolff_producers:lookup_producer(Producers, Partition).
 
 %% @doc Check if the client is connected to the cluster.
+-spec check_connectivity(client_id()) ->
+        ok | {error, [{FormatedHostPort :: binary(), any()}]}.
 check_connectivity(ClientId) ->
     case wolff_client_sup:find_client(ClientId) of
       {ok, Pid} -> wolff_client:check_connectivity(Pid);
       {error, Error} -> {error, Error}
     end.
+
+%% @doc Check if the cluster is reachable.
+-spec check_connectivity([host()], wolff_client:config()) ->
+        ok | {error, [{FormatedHostPort :: binary(), any()}]}.
+check_connectivity(Hosts, ConnConfig) ->
+    wolff_client:check_connectivity(Hosts, ConnConfig).
