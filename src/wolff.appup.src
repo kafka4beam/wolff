@@ -1,8 +1,9 @@
 %% -*-: erlang -*-
-{"1.5.4",
+{"1.5.5",
   [
-    {<<"1\\.5\\.[2-3]">>,
+    {<<"1\\.5\\.[2-4]">>,
      [ {load_module, wolff_producer, brutal_purge, soft_purge, []}
+     , {load_module, wolff_client, brutal_purge, soft_purge, []}
      ]},
     {<<"1\\.5\\..+">>,
       [ {load_module, wolff, brutal_purge, soft_purge, []}

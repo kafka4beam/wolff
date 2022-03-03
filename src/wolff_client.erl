@@ -128,7 +128,7 @@ handle_call(stop, From, #{conns := Conns} = St) ->
 handle_call(check_connectivity, _From, #{seed_hosts := Hosts, conn_config := ConnConfig} = St) ->
   Res = case kpro:connect_any(Hosts, ConnConfig) of
           {ok, Conn} -> ok = close_connection(Conn);
-          {error, Reason} ->  {error, Reason}
+          {error, Reasons} ->  {error, tr_reasons(Reasons)}
         end,
   {reply, Res, St};
 handle_call(_Call, _From, St) ->
@@ -331,7 +331,7 @@ get_metadata([Host | Rest], ConnConfig, Topic, Errors) ->
         _ = close_connection(Pid)
       end;
     {error, Reason} ->
-      get_metadata(Rest, ConnConfig, Topic, [{Host, Reason} | Errors])
+      get_metadata(Rest, ConnConfig, Topic, [Reason | Errors])
   end.
 
 do_get_metadata(Vsn, Connection, Topic) ->
@@ -362,7 +362,10 @@ parse_broker_meta(BrokerMeta) ->
 log_warn(Fmt, Args) -> error_logger:warning_msg(Fmt, Args).
 
 do_connect(Host, ConnConfig) ->
-    kpro:connect(Host, ConnConfig).
+    case kpro:connect(Host, ConnConfig) of
+        {ok, Pid} -> {ok, Pid};
+        {error, Reason} -> {error, tr_reason({Host, Reason})}
+    end.
 
 %% prior to 1.5.2, the connect config is hidden in an anonymous function
 %% which will cause 'badfun' exception after beam is purged.
@@ -383,3 +386,18 @@ get_config(#{start := {_Module, _StartLink, Args}}) ->
     [_ClinetID, _Hosts, Config] = Args,
     {ConnConfig, _MyConfig} = split_config(Config),
     ConnConfig.
+
+tr_reason({{Host, Port}, Reason}) ->
+    {bin([bin(Host), ":", bin(Port)]), do_tr_reason(Reason)}.
+
+do_tr_reason({timeout, _Stack}) -> connection_timed_out;
+do_tr_reason({econnrefused, _Stack}) -> connection_refused;
+do_tr_reason(Other) -> Other.
+
+tr_reasons(L) ->
+    lists:map(fun tr_reason/1, L).
+
+bin(A) when is_atom(A) -> atom_to_binary(A, utf8); %% hostname can be atom like 'localhost'
+bin(L) when is_list(L) -> iolist_to_binary(L);
+bin(B) when is_binary(B) -> B;
+bin(P) when is_integer(P) -> integer_to_binary(P). %% port number
