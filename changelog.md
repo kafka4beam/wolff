@@ -1,5 +1,6 @@
 * 1.6.1
   - Enhance: expose wolff:check_connectivity/2 for connectivity check before starting a client. (PR #18)
+  - Fix: fix badarg pid monitoring error log when trying to close a dead connection. (PR #20)
   - Fix: better error logs (PR #16, PR #17)
     * No need to report stacktrace for timeout and connection refused errors.
     * Report host:port in connection failure reasons.

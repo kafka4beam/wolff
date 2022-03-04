@@ -177,8 +177,10 @@ terminate(_, #{conns := Conns} = St) ->
 close_connections(Conns) ->
   lists:foreach(fun({_, Pid}) -> close_connection(Pid) end, maps:to_list(Conns)).
 
-close_connection(Conn) ->
-  _ = spawn(fun() -> do_close_connection(Conn) end),
+close_connection(Conn) when is_pid(Conn) ->
+  _ = erlang:spawn(fun() -> do_close_connection(Conn) end),
+  ok;
+close_connection(_DownConn) ->
   ok.
 
 %% This is a copy of kpro_connection:stop which supports kill after a timeout
@@ -186,11 +188,8 @@ do_close_connection(Pid) ->
   Mref = erlang:monitor(process, Pid),
   erlang:send(Pid, {{self(), Mref}, stop}),
   receive
-    {Mref, Reply} ->
-      erlang:demonitor(Mref, [flush]),
-      Reply;
-    {'DOWN', Mref, _, _, Reason} ->
-      {error, {connection_down, Reason}}
+    {Mref, _Reply} -> ok;
+    {'DOWN', Mref, _, _, _Reason} -> ok
   after
     5000 ->
       exit(Pid, kill)
