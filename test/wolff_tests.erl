@@ -292,7 +292,7 @@ check_connectivity_test() ->
   ok = application:stop(wolff).
 
 
-cliet_state_upgrade_test() ->
+client_state_upgrade_test() ->
   ClientId = <<"client-stats-test">>,
   _ = application:stop(wolff), %% ensure stopped
   {ok, _} = application:ensure_all_started(wolff),
@@ -305,6 +305,30 @@ cliet_state_upgrade_test() ->
   ok = verify_state_upgrade(Client, fun() -> gen_server:cast(Client, ignore) end),
   ok = stop_client(Client),
   ?assertEqual({error, no_such_client}, wolff:check_connectivity(ClientId)),
+  ok = application:stop(wolff).
+
+fail_to_connect_all_test() ->
+  ClientId = <<"fail-to-connect-test">>,
+  _ = application:stop(wolff), %% ensure stopped
+  {ok, _} = application:ensure_all_started(wolff),
+  ClientCfg = #{connect_timeout => 500},
+  Hosts = [{localhost, 9999},
+           {<<"localhost">>, 9999},
+           {{1, 2, 3, 4}, 9999}, %% timeout
+           {{127, 0, 0}, 9999}, %% invalid type, cause crash but catched
+           {"127.0.0", 9999} %% invalid ip
+          ],
+  {ok, Client} = start_client(ClientId, Hosts, ClientCfg),
+  ?assertEqual({error, failed_to_fetch_metadata},
+               wolff_client:get_leader_connections(Client, <<"test-topic">>)),
+  Refuse = #{host => <<"localhost:9999">>, reason => connection_refused},
+  {error, Errors} = wolff:check_connectivity(ClientId),
+  ?assertMatch([#{host := <<"1.2.3.4:9999">>, reason := connection_timed_out},
+                #{host := <<"127.0.0:9999">>, reason := unreachable_host},
+                Refuse, Refuse,
+                #{host := <<"{127,0,0}:9999">>}
+                ],
+               lists:sort(Errors)),
   ok = application:stop(wolff).
 
 %% helpers
