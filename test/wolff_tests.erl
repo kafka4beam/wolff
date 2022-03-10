@@ -3,6 +3,7 @@
 -export([ack_cb/4]).
 
 -include_lib("eunit/include/eunit.hrl").
+-include_lib("lc/include/lc.hrl").
 -include("wolff.hrl").
 
 -define(KEY, key(?FUNCTION_NAME)).
@@ -216,6 +217,66 @@ replayq_overflow_test() ->
     receive
       {ack_2, buffer_overflow_discarded} -> error("unexpected_discard");
       {ack_2, BaseOffset} -> ?assert(BaseOffset >= 0)
+    after
+        2000 ->
+            error(timeout)
+    end
+  after
+    ok = wolff:stop_producers(Producers),
+    ok = stop_client(Client)
+  end.
+
+replayq_highmem_overflow_test() ->
+  load_ctl:put_config(#{?MEM_MON_F1 => 0.0}),
+  application:ensure_all_started(lc),
+  timer:sleep(2000),
+  true = load_ctl:is_high_mem(),
+  ClientCfg = client_config(),
+  {ok, Client} = start_client(<<"client-1">>, ?HOSTS, ClientCfg),
+  Msg = #{key => <<>>, value => <<"12345">>},
+  Batch = [Msg, Msg],
+  BatchSize = wolff_producer:batch_bytes(Batch),
+  ProducerCfg = #{max_batch_bytes => 1, %% make sure not collecting calls into one batch
+                  replayq_max_total_bytes => BatchSize*1000,
+                  required_acks => all_isr,
+                  max_linger_ms => 1000, %% do not send to kafka immediately
+                  drop_if_highmem => true
+                 },
+  {ok, Producers} = wolff:start_producers(Client, <<"test-topic">>, ProducerCfg),
+  TesterPid = self(),
+  AckFun1 = fun(_Partition, BaseOffset) -> TesterPid ! {ack_1, BaseOffset}, ok end,
+  AckFun2 = fun(_Partition, BaseOffset) -> TesterPid ! {ack_2, BaseOffset}, ok end,
+  AckFun3 = fun(_Partition, BaseOffset) -> TesterPid ! {ack_3, BaseOffset}, ok end,
+  SendF = fun(AckFun) -> wolff:send(Producers, Batch, AckFun) end,
+  %% send two batches to overflow one
+  spawn(fun() -> SendF(AckFun1) end),
+  timer:sleep(1), %% ensure order
+  spawn(fun() -> SendF(AckFun2) end),
+  try
+    %% pushed out of replayq due to overflow
+    receive
+      {ack_1, buffer_overflow_discarded} -> ok;
+      {ack_1, Other0} -> error({"unexpected_ack", Other0})
+    after
+        2000 ->
+            error(timeout)
+    end,
+    %% the second batch is discarded as well
+    receive
+      {ack_2, buffer_overflow_discarded} -> ok;
+      {ack_2, Other1} -> error({"unexpected_ack", Other1})
+    after
+        2000 ->
+            error(timeout)
+    end,
+    application:stop(lc),
+    false = load_ctl:is_high_mem(),
+    timer:sleep(1),
+    spawn(fun() -> SendF(AckFun3) end),
+    %% the second batch should eventually get the ack
+    receive
+      {ack_3, buffer_overflow_discarded} -> error("unexpected_discard");
+      {ack_3, BaseOffset} -> ?assert(BaseOffset >= 0)
     after
         2000 ->
             error(timeout)
