@@ -14,6 +14,9 @@
 
 -module(wolff_producer).
 
+-dialyzer({nowarn_function, enqueue_calls/2}).
+-dialyzer({nowarn_function, is_mem_only_queue/1}).
+
 -include_lib("kafka_protocol/include/kpro.hrl").
 -include("wolff.hrl").
 
@@ -649,7 +652,7 @@ enqueue_calls(Calls, #{replayq := Q,
    lists:foreach(fun maybe_reply_queued/1, Calls),
    Overflow = case maps:get(drop_if_highmem, Config0, false)
                   andalso load_ctl:is_high_mem()
-                  andalso mem_only == maps:get(config, NewQ) of
+                  andalso is_mem_only_queue(NewQ) of
                   true ->
                       max(replayq:overflow(NewQ), CallByteSize);
                   false ->
@@ -718,6 +721,11 @@ get_overflow_log_state() ->
 put_overflow_log_state(Ts, Cnt, Acc) ->
   put(?buffer_overflow_discarded, #{last_ts => Ts, last_cnt => Cnt, acc_cnt => Acc}),
   ok.
+
+is_mem_only_queue(#{config := mem_only}) ->
+    true;
+is_mem_only_queue(#{}) ->
+    false.
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
