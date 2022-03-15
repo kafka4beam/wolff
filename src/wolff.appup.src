@@ -2,8 +2,7 @@
 {"1.5.6",
   [
     {<<"1\\.5\\.[2-5]">>,
-     [ {add_application, lc}
-     , {load_module, wolff_producer, brutal_purge, soft_purge, []}
+     [ {load_module, wolff_producer, brutal_purge, soft_purge, []}
      , {load_module, wolff_client, brutal_purge, soft_purge, []}
      ]},
     {<<"1\\.5\\..+">>,
