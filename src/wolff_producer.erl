@@ -45,7 +45,8 @@
                     max_batch_bytes => pos_integer(),
                     max_linger_ms => non_neg_integer(),
                     max_send_ahead => non_neg_integer(),
-                    compression => kpro:compress_option()
+                    compression => kpro:compress_option(),
+                    drop_if_highmem => boolean()
                    }.
 
 -define(no_timer, no_timer).
@@ -623,24 +624,33 @@ collect_send_calls(Calls, Count, Size, Limit) ->
 enqueue_calls(Calls, #{replayq := Q,
                        pending_acks := PendingAcks0,
                        call_id_base := CallIdBase,
-                       partition := Partition
+                       partition := Partition,
+                       config := Config0
                       } = St0) ->
-  {QueueItems, PendingAcks} =
+  {QueueItems, PendingAcks, CallByteSize} =
     lists:foldl(
-      fun(?SEND_REQ(_From, Batch, AckFun), {Items, PendingAcksIn}) ->
+      fun(?SEND_REQ(_From, Batch, AckFun), {Items, PendingAcksIn, Size}) ->
           CallId = make_call_id(CallIdBase),
           %% keep callback funs in memory, do not seralize it into queue because
           %% saving anonymous function to disk may easily lead to badfun exception
           %% in case of restart on newer version beam.
           PendingAcksOut = PendingAcksIn#{CallId => ?ACK_CB(AckFun, Partition)},
           NewItems = [make_queue_item(CallId, Batch) | Items],
-          {NewItems, PendingAcksOut}
-      end, {[], PendingAcks0}, Calls),
+          {NewItems, PendingAcksOut, Size + batch_bytes(Batch)}
+      end, {[], PendingAcks0, 0}, Calls),
    NewQ = replayq:append(Q, lists:reverse(QueueItems)),
    lists:foreach(fun maybe_reply_queued/1, Calls),
+   Overflow = case maps:get(drop_if_highmem, Config0, false)
+                  andalso replayq:is_mem_only(NewQ)
+                  andalso load_ctl:is_high_mem() of
+                  true ->
+                      max(replayq:overflow(NewQ), CallByteSize);
+                  false ->
+                      replayq:overflow(NewQ)
+              end,
    handle_overflow(St0#{replayq := NewQ,
                         pending_acks := PendingAcks
-                       }, replayq:overflow(NewQ)).
+                       }, Overflow).
 
 maybe_reply_queued(?SEND_REQ(?no_queued_reply, _, _)) -> ok;
 maybe_reply_queued(?SEND_REQ({Pid, Ref}, _, _)) -> erlang:send(Pid, {Ref, ?queued}).
