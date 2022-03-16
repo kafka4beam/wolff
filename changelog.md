@@ -1,3 +1,7 @@
+* 1.6.2
+  - New producer option 'drop\_if\_highmem' to limit the growth of replayq(in mem) size
+  - Drop otp22 support
+  - Bring in local control application
 * 1.6.1
   - Enhance: expose wolff:check_connectivity/2 for connectivity check before starting a client. (PR #18)
   - Fix: fix badarg pid monitoring error log when trying to close a dead connection. (PR #20)

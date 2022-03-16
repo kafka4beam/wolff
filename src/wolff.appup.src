@@ -1,14 +1,14 @@
 %% -*-: erlang -*-
-{"1.6.1",
+{"1.6.2",
   [
-    {"1.6.0",
+    {<<"1\\.6\\.[0-1]">>,
      [ {load_module, wolff_producer, brutal_purge, soft_purge, []}
      , {load_module, wolff_client, brutal_purge, soft_purge, []}
      ]},
     {<<".*">>, []}
   ],
   [
-    {"1.6.0",
+    {<<"1\\.6\\.[0-1]">>,
      [ {load_module, wolff_producer, brutal_purge, soft_purge, []}
      , {load_module, wolff_client, brutal_purge, soft_purge, []}
      ]},
