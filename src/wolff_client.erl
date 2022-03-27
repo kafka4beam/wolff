@@ -215,7 +215,7 @@ do_get_leader_connections(#{conns := Conns} = St, Topic) ->
       end,
   maps:fold(F, [], FindInMap).
 
-%% retrun true if there is no need to refresh metadata because the last one is fresh enough
+%% return true if there is no need to refresh metadata because the last one is fresh enough
 is_metadata_fresh(#{metadata_ts := Topics, config := Config}, Topic) ->
   MinInterval = maps:get(min_metadata_refresh_interval, Config, ?MIN_METADATA_REFRESH_INTERVAL),
   case maps:get(Topic, Topics, false) of
