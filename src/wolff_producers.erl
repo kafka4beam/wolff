@@ -12,7 +12,7 @@
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
 
-%% A per-topic gen_server whihch manages a number of per-partition wolff_producer workers.
+%% A per-topic gen_server which manages a number of per-partition wolff_producer workers.
 -module(wolff_producers).
 
 %% APIs

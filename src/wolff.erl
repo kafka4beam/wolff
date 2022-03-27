@@ -110,7 +110,7 @@ stop_and_delete_supervised_producers(Producers) ->
 %%       But a batch is never split into produce requests.
 %%       Make sure it will not exceed the `max_batch_bytes' limit when sending a batch.
 %% NOTE: In case producers are configured with `required_acks = none',
-%%       the second arg for callback funcion will always be `?UNKNOWN_OFFSET' (`-1').
+%%       the second arg for callback function will always be `?UNKNOWN_OFFSET' (`-1').
 -spec send(producers(), [msg()], ack_fun()) -> {partition(), pid()}.
 send(Producers, Batch, AckFun) ->
   {Partition, ProducerPid} = wolff_producers:pick_producer(Producers, Batch),
