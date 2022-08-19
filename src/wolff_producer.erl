@@ -143,7 +143,7 @@ send_sync(Pid, Batch0, Timeout) ->
 init(St) ->
   erlang:process_flag(trap_exit, true),
   %% ensure init/1 can never fail
-  %% so the caller can unify error handeling on EXIT signal
+  %% so the caller can unify error handling on EXIT signal
   self() ! {do_init, St},
   {ok, #{}}.
 
@@ -358,7 +358,7 @@ send_to_kafka(#{sent_reqs := Sent,
                 partition := Partition,
                 ?linger_expire_timer := LTimer
                } = St0) ->
-  %% timer might have alreay expired, but should do no harm
+  %% timer might have already expired, but should do no harm
   is_reference(LTimer) andalso erlang:cancel_timer(LTimer),
   {NewQ, QAckRef, Items} =
     replayq:pop(Q, #{bytes_limit => BytesLimit, count_limit => 999999999}),
@@ -466,7 +466,7 @@ do_handle_kafka_ack(Ref, BaseOffset,
 %% @private This function is called in below scenarios
 %% * Failed to connect any of the brokers
 %% * Failed to connect to partition leader
-%% * Connection 'DOWN' due to Kafka initiated soket close
+%% * Connection 'DOWN' due to Kafka initiated socket close
 %% * Produce request failure
 %%   - Socket error
 %%   - Error code received from Kafka

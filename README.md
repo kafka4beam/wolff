@@ -165,7 +165,7 @@ wolff:send(Producers, [Msg], AckFun).
    `fun((PartitionCount, [msg()]) -> partition())`: Caller defined callback.
    `partition()`: Caller specified exact partition.
 
-* `name`: defaul=`wolff_producers`
+* `name`: default=`wolff_producers`
    Atom used to register producer manager process when starting producers
    under wolff's supervision tree. It is also used as the ets table name
    for producer worker lookup.
