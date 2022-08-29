@@ -385,7 +385,7 @@ fail_to_connect_all_test() ->
   Refuse = {<<"localhost:9999">>, connection_refused},
   {error, Errors} = wolff:check_connectivity(ClientId),
   ?assertMatch([{<<"1.2.3.4:9999">>, connection_timed_out},
-                {<<"127.0.0:9999">>, unreachable_host},
+                {<<"127.0.0:9999">>, _},
                 Refuse, Refuse,
                 {<<"{127,0,0}:9999">>, _}
                 ],

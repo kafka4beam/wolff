@@ -1,3 +1,6 @@
+* 1.5.7
+  - Stop supervised producer if failed to start. Otherwise the caller may have to call the wolff:stop_and_delete_supervised_producers/3
+    after matching an error return. If they don't, then it may appear as a resource leak.
 * 1.5.6
   - New producer option 'drop\_if\_highmem' to limit the growth of replayq(in mem) size
   - Drop otp22 support

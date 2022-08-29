@@ -81,11 +81,11 @@ test_client_restart(ClientId, Topic, Partition) ->
                  },
   {ok, Producers} = wolff:ensure_supervised_producers(ClientId, Topic, ProducerCfg),
   Msg1 = #{key => ?KEY, value => <<"1">>},
-  {_Partition, Offset1} = wolff:send_sync(Producers, [Msg1], 5000),
+  {_, Offset1} = wolff:send_sync(Producers, [Msg1], 5000),
   erlang:exit(ClientPid, kill),
   timer:sleep(5),
   Msg2 = #{key => ?KEY, value => <<"2">>},
-  {_Partition, _Offset2} = wolff:send_sync(Producers, [Msg2], 5000),
+  {_, _Offset2} = wolff:send_sync(Producers, [Msg2], 5000),
   {ok, NewClientPid} = wolff_client_sup:find_client(ClientId),
   ok = fetch_and_match(NewClientPid, Topic, Partition, Offset1, [Msg1, Msg2]),
   %% cleanup
@@ -203,6 +203,30 @@ test_partition_count_refresh() ->
   timer:sleep(timer:seconds(IntervalSeconds * 2)),
   {Partition1, _} = wolff:send_sync(Producers, [Msg], 3000),
   ?assertEqual(Partitions0, Partition1).
+
+non_existing_topic_test() ->
+  ClientId = atom_to_binary(?FUNCTION_NAME),
+  Topic = <<"non-existing-topic">>,
+  _ = application:stop(wolff), %% ensure stopped
+  {ok, _} = application:ensure_all_started(wolff),
+  ClientCfg = #{},
+  {ok, _ClientPid} = wolff:ensure_supervised_client(ClientId, ?HOSTS, ClientCfg),
+  ?assertMatch({error, _}, wolff:ensure_supervised_producers(ClientId, Topic, #{name => ?FUNCTION_NAME})),
+  ?assertMatch([], supervisor:which_children(wolff_producers_sup)),
+  ok = wolff:stop_and_delete_supervised_producers(ClientId, Topic, ?FUNCTION_NAME),
+  ok = wolff:stop_and_delete_supervised_client(ClientId),
+  ok.
+
+start_producers_with_dead_client_test() ->
+  ClientId = atom_to_binary(?FUNCTION_NAME),
+  Topic = <<"non-existing-topic">>,
+  _ = application:stop(wolff), %% ensure stopped
+  {ok, _} = application:ensure_all_started(wolff),
+  ?assertMatch({error, _}, wolff:ensure_supervised_producers(<<"never-started">>, Topic, #{name => ?FUNCTION_NAME})),
+  ?assertMatch([], supervisor:which_children(wolff_producers_sup)),
+  ok = wolff:stop_and_delete_supervised_producers(ClientId, Topic, ?FUNCTION_NAME),
+  ok = wolff:stop_and_delete_supervised_client(ClientId),
+  ok.
 
 %% helpers
 wait_for_pid(F) ->
