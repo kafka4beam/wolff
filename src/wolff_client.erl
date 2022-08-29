@@ -150,6 +150,8 @@ handle_cast({recv_leader_connection, Topic, Partition, Caller}, St0) ->
   case ensure_leader_connections(St0, Topic) of
     {ok, St} ->
       Partitions = do_get_leader_connections(St, Topic),
+      %% the Partition in argument is a result of ensure_leader_connections
+      %% so here the lists:keyfind must succeeded, otherwise a bug
       {_, MaybePid} = lists:keyfind(Partition, 1, Partitions),
       _ = erlang:send(Caller, ?leader_connection(MaybePid)),
       {noreply, St};
@@ -234,30 +236,32 @@ do_ensure_leader_connections(#{conn_config := ConnConfig,
                                metadata_ts := MetadataTs
                               } = St0, Topic) ->
   case get_metadata(SeedHosts, ConnConfig, Topic, []) of
-    {ok, {Brokers, Partitions}} ->
-      St = lists:foldl(
-             fun(Partition, StIn) ->
-                 try
-                   ensure_leader_connection(StIn, Brokers, Topic, Partition)
-                 catch
-                   error : Reason ->
-                     log_warn("Bad metadata for ~p-~p\nreason=~p", [Topic, Partition, Reason]),
-                     StIn
-                 end
-             end, St0, Partitions),
+    {ok, {Brokers, PartitionMetaList}} ->
+      St = lists:foldl(fun(PartitionMeta, StIn) ->
+                           ensure_leader_connection(StIn, Brokers, Topic, PartitionMeta)
+                       end, St0, PartitionMetaList),
       {ok, St#{metadata_ts := MetadataTs#{Topic => erlang:timestamp()}}};
     {error, Reason} ->
       log_warn("Failed to get metadata\nreason: ~p", [Reason]),
       {error, failed_to_fetch_metadata}
   end.
 
-ensure_leader_connection(#{conn_config := ConnConfig,
-                           conns := Connections0
-                          } = St0, Brokers, Topic, P_Meta) ->
-  Leaders0 = maps:get(leaders, St0, #{}),
-  ErrorCode = kpro:find(error_code, P_Meta),
-  ErrorCode =:= ?no_error orelse erlang:error(ErrorCode),
+%% This function ensures each Topic-Partition pair has a connection record
+%% either a pid when the leader is healthy, or the error reason
+%% if failed to discover the leader or failed to connect to the leader
+ensure_leader_connection(St, Brokers, Topic, P_Meta) ->
   PartitionNum = kpro:find(partition, P_Meta),
+  ErrorCode = kpro:find(error_code, P_Meta),
+  case ErrorCode =:= ?no_error of
+    true ->
+      do_ensure_leader_connection(St, Brokers, Topic, PartitionNum, P_Meta);
+    false ->
+      maybe_disconnect_old_leader(St, Topic, PartitionNum, ErrorCode)
+  end.
+
+do_ensure_leader_connection(#{conn_config := ConnConfig,
+                              conns := Connections0
+                             } = St0, Brokers, Topic, PartitionNum, P_Meta) ->
   LeaderBrokerId = kpro:find(leader, P_Meta),
   {_, Host} = lists:keyfind(LeaderBrokerId, 1, Brokers),
   Strategy = get_connection_strategy(St0),
@@ -277,12 +281,34 @@ ensure_leader_connection(#{conn_config := ConnConfig,
         add_conn(do_connect(Host, ConnConfig), ConnId, Connections0)
     end,
   St = St0#{conns := Connections},
+  Leaders0 = maps:get(leaders, St0, #{}),
   case Strategy of
     per_broker ->
       Leaders = Leaders0#{{Topic, PartitionNum} => maps:get(ConnId, Connections)},
       St#{leaders => Leaders};
     _ ->
       St
+  end.
+
+%% Handle error code in partition metadata.
+maybe_disconnect_old_leader(#{conns := Connections} = St, Topic, PartitionNum, ErrorCode) ->
+  Strategy = get_connection_strategy(St),
+  case Strategy of
+    per_partition ->
+      %% partition metadata has error code, there is no need to keep the old connection alive
+      ConnId = {Topic, PartitionNum},
+      MaybePid = maps:get(ConnId, Connections, false),
+      is_pid(MaybePid) andalso close_connection(MaybePid),
+      St#{conns := add_conn({error, ErrorCode}, ConnId, Connections)};
+    _ ->
+      %% the connection is shared by producers (for different topics)
+      %% so we do not close the connection here.
+      %% Also, since we do not know which Host the current leader resides
+      %% (due to the error code returned) there is no way to know which
+      %% connection to close anyway.
+      Leaders0 = maps:get(leaders, St, #{}),
+      Leaders = Leaders0#{{Topic, PartitionNum} => ErrorCode},
+      St#{leaders => Leaders}
   end.
 
 get_connection_strategy(#{config := Config}) ->
@@ -314,8 +340,8 @@ is_connected(MaybePid, {Host, Port}) ->
 
 is_alive(Pid) -> is_pid(Pid) andalso erlang:is_process_alive(Pid).
 
-add_conn({ok, Pid}, ConnId, Conns) -> Conns#{ConnId => Pid};
-add_conn({error, Reason}, ConnId, Conns) -> Conns#{ConnId => Reason}.
+add_conn({ok, Pid}, ConnId, Conns) when is_pid(Pid) -> Conns#{ConnId => Pid};
+add_conn({error, Reason}, ConnId, Conns) when not is_pid(Reason) -> Conns#{ConnId => Reason}.
 
 split_config(Config) ->
   ConnCfgKeys = kpro_connection:all_cfg_keys(),

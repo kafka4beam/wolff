@@ -369,16 +369,17 @@ start_new_producers(#{client_id := ClientId,
                       config := Config,
                       ets := Ets
                      } = St, Connections0) ->
+  NowCount = length(Connections0),
   %% process only the newly discovered connections
   F = fun({Partition, _MaybeConnPid}) -> [] =:= ets:lookup(Ets, Partition) end,
   Connections = lists:filter(F, Connections0),
   Workers = start_link_producers(ClientId, Topic, Connections, Config),
   true = ets:insert(Ets, maps:to_list(Workers)),
-  true = (length(Connections0) >= partition_cnt(ClientId, Topic)), %% assert
-  case maps:size(Workers) > 0 of
+  OldCount = partition_cnt(ClientId, Topic),
+  case OldCount < NowCount of
     true ->
-      log_info("started_producers_for_newly_discovered_partitions count: ~p", [Workers]),
-      ok = put_partition_cnt(ClientId, Topic, length(Connections0));
+      log_info("started_producers_for_newly_discovered_partitions ~p", [Workers]),
+      ok = put_partition_cnt(ClientId, Topic, NowCount);
     false ->
       ok
   end,
