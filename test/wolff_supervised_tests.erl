@@ -81,11 +81,11 @@ test_client_restart(ClientId, Topic, Partition) ->
                  },
   {ok, Producers} = wolff:ensure_supervised_producers(ClientId, Topic, ProducerCfg),
   Msg1 = #{key => ?KEY, value => <<"1">>},
-  {_Partition, Offset1} = wolff:send_sync(Producers, [Msg1], 5000),
+  {_, Offset1} = wolff:send_sync(Producers, [Msg1], 5000),
   erlang:exit(ClientPid, kill),
   timer:sleep(5),
   Msg2 = #{key => ?KEY, value => <<"2">>},
-  {_Partition, _Offset2} = wolff:send_sync(Producers, [Msg2], 5000),
+  {_, _Offset2} = wolff:send_sync(Producers, [Msg2], 5000),
   {ok, NewClientPid} = wolff_client_sup:find_client(ClientId),
   ok = fetch_and_match(NewClientPid, Topic, Partition, Offset1, [Msg1, Msg2]),
   %% cleanup
