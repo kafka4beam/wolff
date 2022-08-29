@@ -217,6 +217,17 @@ non_existing_topic_test() ->
   ok = wolff:stop_and_delete_supervised_client(ClientId),
   ok.
 
+start_producers_with_dead_client_test() ->
+  ClientId = atom_to_binary(?FUNCTION_NAME),
+  Topic = <<"non-existing-topic">>,
+  _ = application:stop(wolff), %% ensure stopped
+  {ok, _} = application:ensure_all_started(wolff),
+  ?assertMatch({error, _}, wolff:ensure_supervised_producers(<<"never-started">>, Topic, #{name => ?FUNCTION_NAME})),
+  ?assertMatch([], supervisor:which_children(wolff_producers_sup)),
+  ok = wolff:stop_and_delete_supervised_producers(ClientId, Topic, ?FUNCTION_NAME),
+  ok = wolff:stop_and_delete_supervised_client(ClientId),
+  ok.
+
 %% helpers
 wait_for_pid(F) ->
   Pid = F(),
