@@ -235,20 +235,34 @@ do_ensure_leader_connections(#{conn_config := ConnConfig,
                               } = St0, Topic) ->
   case get_metadata(SeedHosts, ConnConfig, Topic, []) of
     {ok, {Brokers, Partitions}} ->
-      St = lists:foldl(
-             fun(Partition, StIn) ->
-                 try
-                   ensure_leader_connection(StIn, Brokers, Topic, Partition)
-                 catch
-                   error : Reason ->
-                     log_warn("Bad metadata for ~p-~p\nreason=~p", [Topic, Partition, Reason]),
-                     StIn
-                 end
-             end, St0, Partitions),
+      {St, Errors} = lists:foldl(
+        fun(Partition, {StIn, Errs}) ->
+          try
+            {ensure_leader_connection(StIn, Brokers, Topic, Partition), Errs}
+          catch
+            error : Reason ->
+              {StIn, [Reason | Errs]}
+          end
+        end, {St0, []}, Partitions),
+      case limit_errors(lists:reverse(Errors)) of
+        [] ->
+          ok;
+        ErrorsP ->
+          log_warn("Bad metadata for ~s~nErrors=~p", [Topic, ErrorsP])
+      end,
       {ok, St#{metadata_ts := MetadataTs#{Topic => erlang:timestamp()}}};
     {error, Reason} ->
       log_warn("Failed to get metadata\nreason: ~p", [Reason]),
       {error, failed_to_fetch_metadata}
+  end.
+
+limit_errors(Errors) ->
+  case length(Errors) > 3 of
+    true ->
+      {H, _} = lists:split(3, Errors),
+      H;
+    false ->
+      Errors
   end.
 
 ensure_leader_connection(#{conn_config := ConnConfig,
@@ -256,8 +270,8 @@ ensure_leader_connection(#{conn_config := ConnConfig,
                           } = St0, Brokers, Topic, P_Meta) ->
   Leaders0 = maps:get(leaders, St0, #{}),
   ErrorCode = kpro:find(error_code, P_Meta),
-  ErrorCode =:= ?no_error orelse erlang:error(ErrorCode),
   PartitionNum = kpro:find(partition, P_Meta),
+  ErrorCode =:= ?no_error orelse erlang:error({PartitionNum, ErrorCode}),
   LeaderBrokerId = kpro:find(leader, P_Meta),
   {_, Host} = lists:keyfind(LeaderBrokerId, 1, Brokers),
   Strategy = get_connection_strategy(St0),
