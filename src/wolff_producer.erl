@@ -487,11 +487,11 @@ log_connection_down(_Topic, _Partition, _, to_be_discovered) ->
   %% this is the initial state of the connection
   ok;
 log_connection_down(Topic, Partition, Conn, Reason) when is_pid(Conn) ->
-  log_info(Topic, Partition, "connection to partition leader is down, pid=~p, reason=~0p", [Conn, Reason]);
+  log_info(Topic, Partition, "connection to partition leader is down, pid=~p~nreason=~0p", [Conn, Reason]);
 log_connection_down(Topic, Partition, _, noproc) ->
   log_info(Topic, Partition, "connection to partition leader is down, pending on reconnect", []);
 log_connection_down(Topic, Partition, _, Reason) ->
-  log_info(Topic, Partition, "connection to partition leader is down, reason=~p", [Reason]).
+  log_info(Topic, Partition, "connection to partition leader is down~nreason=~p", [Reason]).
 
 ensure_delayed_reconnect(#{config := #{reconnect_delay_ms := Delay0},
                            client_id := ClientId,
