@@ -299,6 +299,6 @@ ensure_partitions(Topic, Partitions) ->
 kafka_topic_cmd_base(Topic) when is_binary(Topic) ->
     kafka_topic_cmd_base(binary_to_list(Topic));
 kafka_topic_cmd_base(Topic) ->
-    "docker exec wolff-kafka /opt/kafka/bin/kafka-topics.sh" ++
+    "docker exec wolff-kafka-1 /opt/kafka/bin/kafka-topics.sh" ++
     " --zookeeper zookeeper:2181" ++
     " --topic '" ++ Topic ++ "'".
