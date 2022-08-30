@@ -340,8 +340,12 @@ is_connected(MaybePid, {Host, Port}) ->
 
 is_alive(Pid) -> is_pid(Pid) andalso erlang:is_process_alive(Pid).
 
-add_conn({ok, Pid}, ConnId, Conns) when is_pid(Pid) -> Conns#{ConnId => Pid};
-add_conn({error, Reason}, ConnId, Conns) when not is_pid(Reason) -> Conns#{ConnId => Reason}.
+add_conn({ok, Pid}, ConnId, Conns) ->
+    true = is_pid(Pid), %% assert
+    Conns#{ConnId => Pid};
+add_conn({error, Reason}, ConnId, Conns) ->
+    false = is_pid(Reason), %% assert
+    Conns#{ConnId => Reason}.
 
 split_config(Config) ->
   ConnCfgKeys = kpro_connection:all_cfg_keys(),
