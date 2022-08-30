@@ -5,13 +5,34 @@ services:
     ports:
       - "2181:2181"
     container_name: wolff-zk
-  kafka:
+  kafka_1:
+    depends_on:
+      - zookeeper
     image: wurstmeister/kafka:2.13-2.7.0
     ports:
       - "9092:9092"
-    container_name: wolff-kafka
+    container_name: wolff-kafka-1
     environment:
-      KAFKA_ADVERTISED_HOST_NAME: localhost
+      KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: DEFAULT://:9092,INTRA://:9093
+      KAFKA_ADVERTISED_LISTENERS: DEFAULT://localhost:9092,INTRA://wolff-kafka-1:9093,
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: DEFAULT:PLAINTEXT,INTRA:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTRA
       KAFKA_CREATE_TOPICS: test-topic:1:1,test-topic-2:2:1,test-topic-3:1:1,
+  kafka_2:
+    depends_on:
+      - kafka_1
+    image: wurstmeister/kafka:2.13-2.7.0
+    ports:
+      - "9192:9092"
+    container_name: wolff-kafka-2
+    environment:
+      KAFKA_BROKER_ID: 2
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: DEFAULT://:9092,INTRA://:9093
+      KAFKA_ADVERTISED_LISTENERS: DEFAULT://localhost:9192,INTRA://wolff-kafka-2:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: DEFAULT:PLAINTEXT,INTRA:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTRA
+      KAFKA_CREATE_TOPICS: test-topic-r2:1:2
 
