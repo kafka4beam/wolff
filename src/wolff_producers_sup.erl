@@ -36,7 +36,7 @@ init([]) ->
 
 %% ensure a client started under supervisor
 -spec ensure_present(wolff:client_id(), kpro:topic(), wolff_producer:config()) ->
-  {ok, pid()} | {error, client_not_running}.
+  {ok, pid()} | {error, term()}.
 ensure_present(ClientId, Topic, Config) ->
   ChildSpec = child_spec(ClientId, Topic, Config),
   case supervisor:start_child(?SUPERVISOR, ChildSpec) of

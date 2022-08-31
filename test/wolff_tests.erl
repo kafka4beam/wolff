@@ -385,12 +385,49 @@ fail_to_connect_all_test() ->
   Refuse = #{host => <<"localhost:9999">>, reason => connection_refused},
   {error, Errors} = wolff:check_connectivity(ClientId),
   ?assertMatch([#{host := <<"1.2.3.4:9999">>, reason := connection_timed_out},
-                #{host := <<"127.0.0:9999">>, reason := unreachable_host},
+                #{host := <<"127.0.0:9999">>, reason := _},
                 Refuse, Refuse,
                 #{host := <<"{127,0,0}:9999">>}
                 ],
                lists:sort(Errors)),
   ok = application:stop(wolff).
+
+leader_restart_test_() ->
+  {timeout, 60,
+   fun() -> test_leader_restart() end}.
+
+test_leader_restart() ->
+  %% do not include - or _ in topic name
+  Topic = "testtopic" ++ integer_to_list(abs(erlang:monotonic_time())),
+  %% number of partitions should be greater than number of Kafka brokers
+  Partitions = 5,
+  %% replication factor has to be 1 to trigger leader_not_available error code
+  ReplicationFactor = 1,
+  ok = create_topic(Topic, Partitions, ReplicationFactor),
+  try
+    _ = application:stop(wolff), %% ensure stopped
+    {ok, _} = application:ensure_all_started(wolff),
+    ClientCfg = client_config(),
+    ClientIdA = iolist_to_binary("ca-" ++ Topic),
+    ClientIdB = iolist_to_binary("cb-" ++ Topic),
+    {ok, ClientA} = start_client(ClientIdA, ?HOSTS, ClientCfg#{connection_strategy => per_partition}),
+    {ok, ClientB} = start_client(ClientIdB, ?HOSTS, ClientCfg#{connection_strategy => per_broker}),
+    TopicBin = iolist_to_binary(Topic),
+    {ok, LeadersA0} = wolff_client:get_leader_connections(ClientA, TopicBin),
+    {ok, LeadersB0} = wolff_client:get_leader_connections(ClientB, TopicBin),
+    ok = stop_kafka_2(),
+    {ok, LeadersA1} = wolff_client:get_leader_connections(ClientA, TopicBin),
+    {ok, LeadersB1} = wolff_client:get_leader_connections(ClientB, TopicBin),
+    ok = start_kafka_2(),
+    %% expect the number of leaders are the same even though one broker is down
+    ?assert(length(LeadersA0) =:= length(LeadersA1)),
+    ?assert(length(LeadersB0) =:= length(LeadersB1)),
+    ok = wolff_client:stop(ClientA),
+    ok = wolff_client:stop(ClientB)
+  after
+    ok = delete_topic(Topic)
+  end,
+  ok.
 
 %% helpers
 
@@ -434,3 +471,42 @@ batch_bytes(Batch) ->
 encoded_bytes(Batch) ->
   Encoded = kpro_batch:encode(2, Batch, no_compression),
   iolist_size(Encoded).
+
+create_topic(Topic, Partitions, ReplicationFactor) ->
+  Cmd = create_topic_cmd(Topic, Partitions, ReplicationFactor),
+  Result = os:cmd(Cmd),
+  Expected = "Created topic " ++ Topic ++ ".\n",
+  ?assertEqual(Expected, Result),
+  ok.
+
+delete_topic(Topic) ->
+  Cmd = delete_topic_cmd(Topic),
+  Result = os:cmd(Cmd),
+  case string:str(Result, "Topic " ++ Topic ++ " is marked for deletion.") of
+    1 -> ok;
+    _ -> throw(Result)
+  end.
+
+create_topic_cmd(Topic, Partitions, ReplicationFactor) ->
+  "docker exec wolff-kafka-1 /opt/kafka/bin/kafka-topics.sh" ++
+  " --zookeeper zookeeper:2181" ++
+  " --create" ++
+  " --topic '" ++ Topic ++ "'" ++
+  " --partitions " ++ integer_to_list(Partitions) ++
+  " --replication-factor " ++ integer_to_list(ReplicationFactor).
+
+delete_topic_cmd(Topic) ->
+  "docker exec wolff-kafka-1 /opt/kafka/bin/kafka-topics.sh" ++
+  " --zookeeper zookeeper:2181" ++
+  " --delete" ++
+  " --topic '" ++ Topic ++ "'".
+
+stop_kafka_2() ->
+  Cmd = "docker stop wolff-kafka-2",
+  os:cmd(Cmd),
+  ok.
+
+start_kafka_2() ->
+  Cmd = "docker start wolff-kafka-2",
+  os:cmd(Cmd),
+  ok.
