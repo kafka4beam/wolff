@@ -90,19 +90,23 @@ stop_linked(#{workers := Workers}) when is_map(Workers) ->
 %% @doc Start supervised producers.
 -spec start_supervised(wolff:client_id(), topic(), config()) -> {ok, producers()} | {error, any()}.
 start_supervised(ClientId, Topic, ProducerCfg) ->
-  {ok, Pid} = wolff_producers_sup:ensure_present(ClientId, Topic, ProducerCfg),
-  case gen_server:call(Pid, get_workers, infinity) of
-    ?not_initialized ->
-      %% This means wolff_client failed to fetch metadata
-      %% for this topic, wolff_producers will keep retrying,
-      %% but we have to return an error here
-      {error, failed_to_initialize_producers_in_time};
-    Ets ->
-      {ok, #{client_id => ClientId,
-             topic => Topic,
-             workers => Ets,
-             partitioner => maps:get(partitioner, ProducerCfg, random)
-            }}
+  case wolff_producers_sup:ensure_present(ClientId, Topic, ProducerCfg) of
+    {ok, Pid} ->
+      case gen_server:call(Pid, get_workers, infinity) of
+        ?not_initialized ->
+          %% This means wolff_client failed to fetch metadata
+          %% for this topic.
+          _ = wolff_producers_sup:ensure_absence(ClientId, get_name(ProducerCfg)),
+          {error, failed_to_initialize_producers_in_time};
+        Ets ->
+          {ok, #{client_id => ClientId,
+                topic => Topic,
+                workers => Ets,
+                partitioner => maps:get(partitioner, ProducerCfg, random)
+                }}
+      end;
+    {error, Reason} ->
+      {error, Reason}
   end.
 
 %% @doc Ensure workers and clean up meta data.
@@ -374,17 +378,18 @@ start_new_producers(#{client_id := ClientId,
                       config := Config,
                       ets := Ets
                      } = St, Connections0) ->
+  NowCount = length(Connections0),
   %% process only the newly discovered connections
   F = fun({Partition, _MaybeConnPid}) -> [] =:= ets:lookup(Ets, Partition) end,
   Connections = lists:filter(F, Connections0),
   Workers = start_link_producers(ClientId, Topic, Connections, Config),
   true = ets:insert(Ets, maps:to_list(Workers)),
-  true = (length(Connections0) >= partition_cnt(ClientId, Topic)), %% assert
-  case maps:size(Workers) > 0 of
+  OldCount = partition_cnt(ClientId, Topic),
+  case OldCount < NowCount of
     true ->
       log_info("started_producers_for_newly_discovered_partitions",
                #{workers => Workers}),
-      ok = put_partition_cnt(ClientId, Topic, length(Connections0));
+      ok = put_partition_cnt(ClientId, Topic, NowCount);
     false ->
       ok
   end,
