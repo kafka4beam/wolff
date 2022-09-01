@@ -24,7 +24,7 @@
 %% gen_server callbacks
 -export([code_change/3, handle_call/3, handle_cast/2, handle_info/2, init/1, terminate/2]).
 
--export_type([producers/0]).
+-export_type([producers/0, config/0]).
 
 -include("wolff.hrl").
 
@@ -37,7 +37,9 @@
 
 -type topic() :: kpro:topic().
 -type partition() :: kpro:partition().
--type config() :: wolff_producer:config().
+-type config_key() :: name | partitioner | partition_count_refresh_interval_seconds |
+                      wolff_producer:config_key().
+-type config() :: #{config_key() => term()}.
 -type partitioner() :: random %% default
                      | roundrobin
                      | first_key_dispatch
@@ -192,6 +194,7 @@ pick_partition(Count, roundrobin, _) ->
 pick_partition(Count, first_key_dispatch, [#{key := Key} | _]) ->
   erlang:phash2(Key) rem Count.
 
+-spec init({wolff:client_id(), wolff:topic(), config()}) -> {ok, map()}.
 init({ClientId, Topic, Config}) ->
   erlang:process_flag(trap_exit, true),
   self() ! ?rediscover_client,

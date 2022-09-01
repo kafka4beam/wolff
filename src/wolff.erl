@@ -50,7 +50,7 @@
 -type name() :: atom().
 -type offset() :: kpro:offset().
 -type offset_reply() :: offset() | buffer_overflow_discarded.
--type producer_cfg() :: wolff_producer:config().
+-type producers_cfg() :: wolff_producers:config().
 -type producers() :: wolff_producers:producers().
 -type partitioner() :: wolff_producers:partitioner().
 
@@ -74,7 +74,7 @@ stop_and_delete_supervised_client(ClientId) ->
   wolff_client_sup:ensure_absence(ClientId).
 
 %% @doc Start producers with the per-partition workers linked to caller.
--spec start_producers(pid(), topic(), producer_cfg()) -> {ok, producers()} | {error, any()}.
+-spec start_producers(pid(), topic(), producers_cfg()) -> {ok, producers()} | {error, any()}.
 start_producers(Client, Topic, ProducerCfg) when is_pid(Client) ->
   wolff_producers:start_linked_producers(Client, Topic, ProducerCfg).
 
@@ -84,7 +84,7 @@ stop_producers(Producers) ->
   wolff_producers:stop_linked(Producers).
 
 %% @doc Ensure supervised producers are started.
--spec ensure_supervised_producers(client_id(), topic(), producer_cfg()) ->
+-spec ensure_supervised_producers(client_id(), topic(), producers_cfg()) ->
   {ok, producers()} | {error, any()}.
 ensure_supervised_producers(ClientId, Topic, ProducerCfg) ->
   wolff_producers:start_supervised(ClientId, Topic, ProducerCfg).
