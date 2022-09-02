@@ -67,7 +67,7 @@ send_one_msg_max_batch_test() ->
   VarintDelta = wolff_producer:varint_bytes(?MAX_BATCH_BYTES) -
                 wolff_producer:varint_bytes(0),
   MaxValueBytes = ?MAX_BATCH_BYTES - EmptyBatchBytes -
-                  VarintDelta*2, % *2 because the lenth is repeated
+                  VarintDelta*2, % *2 because the length is repeated
   Msg = #{key => <<>>,
           value => iolist_to_binary(lists:duplicate(MaxValueBytes, 0))
          },
@@ -376,7 +376,7 @@ fail_to_connect_all_test() ->
   Hosts = [{localhost, 9999},
            {<<"localhost">>, 9999},
            {{1, 2, 3, 4}, 9999}, %% timeout
-           {{127, 0, 0}, 9999}, %% invalid type, cause crash but catched
+           {{127, 0, 0}, 9999}, %% invalid type, cause crash but caught
            {"127.0.0", 9999} %% invalid ip
           ],
   {ok, Client} = start_client(ClientId, Hosts, ClientCfg),

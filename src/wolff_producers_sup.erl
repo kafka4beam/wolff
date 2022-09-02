@@ -35,7 +35,7 @@ init([]) ->
   {ok, {SupFlags, Children}}.
 
 %% ensure a client started under supervisor
--spec ensure_present(wolff:client_id(), kpro:topic(), wolff_producer:config()) ->
+-spec ensure_present(wolff:client_id(), kpro:topic(), wolff_producers:config()) ->
   {ok, pid()} | {error, term()}.
 ensure_present(ClientId, Topic, Config) ->
   ChildSpec = child_spec(ClientId, Topic, Config),
