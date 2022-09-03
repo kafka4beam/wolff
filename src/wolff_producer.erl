@@ -31,11 +31,23 @@
 %% for test
 -export([batch_bytes/1, varint_bytes/1]).
 
--export_type([config/0]).
+-export_type([config/0, config_key/0]).
 
 -type topic() :: kpro:topic().
 -type partition() :: kpro:partition().
 -type offset_reply() :: wolff:offset_reply().
+-type config_key() :: replayq_dir |
+                      replayq_max_total_bytes |
+                      replayq_seg_bytes |
+                      replayq_offload_mode |
+                      required_acks |
+                      ack_timeout |
+                      max_batch_bytes |
+                      max_linger_ms |
+                      max_send_ahead |
+                      compression |
+                      drop_if_highmem.
+
 -type config() :: #{replayq_dir := string(),
                     replayq_max_total_bytes => pos_integer(),
                     replayq_seg_bytes => pos_integer(),

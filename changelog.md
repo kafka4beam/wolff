@@ -1,3 +1,5 @@
+* 1.6.4 (merged from 1.5.8)
+  - Fix type specs for producers and producer config. [#31](https://github.com/kafka4beam/wolff/pull/31)
 * 1.6.3 (merged from 1.5.7)
   - Stop supervised producer if failed to start. Otherwise the caller may have to call the wolff:stop_and_delete_supervised_producers/3
     after matching an error return. If they don't, then it may appear as a resource leak. [#26](https://github.com/kafka4beam/wolff/pull/26)
