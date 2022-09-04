@@ -12,6 +12,6 @@
   {mod, {wolff_app, start}},
   {modules, []},
   {maintainers, []},
-  {licenses, ["Apache 2.0"]},
+  {licenses, ["Apache-2.0"]},
   {links, []}
  ]}.
