@@ -33,7 +33,7 @@ xref: compile
 
 .PHONY: hex
 hex: clean
-	@rebar3 hex publish
+	@rebar3 hex publish package
 
 .PHONY: cover
 cover:
