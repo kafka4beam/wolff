@@ -1,3 +1,5 @@
+* 1.6.5
+  - Upgrade `kafka_protocol` from version 4.0.3 to version to 4.1.0 for SASL/GSSAPI auth support.
 * 1.6.4 (merged from 1.5.8)
   - Fix type specs for producers and producer config. [#31](https://github.com/kafka4beam/wolff/pull/31)
 * 1.6.3 (merged from 1.5.7)
