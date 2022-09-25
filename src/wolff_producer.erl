@@ -509,11 +509,12 @@ ensure_delayed_reconnect(#{config := #{reconnect_delay_ms := Delay0},
                            client_id := ClientId,
                            topic := Topic,
                            partition := Partition,
-                           reconnect_timer := ?no_timer
+                           reconnect_timer := ?no_timer,
+                           conn := Conn
                           } = St, DelayStrategy) ->
   Attempts = maps:get(reconnect_attempts, St, 0),
   Attempts > 0 andalso Attempts rem 10 =:= 0 andalso
-    log_error(Topic, Partition, "still disconnected after ~p reconnect attempts", [Attempts]),
+    log_error(Topic, Partition, "still disconnected after ~p reconnect attempts, conn=~p~n", [Attempts, Conn]),
   Delay =
     case DelayStrategy of
       no_delay_for_first_attempt when Attempts =:= 0 ->
