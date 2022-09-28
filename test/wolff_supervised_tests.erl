@@ -7,6 +7,8 @@
 -define(HOSTS, [{"localhost", 9092}]).
 
 supervised_client_test() ->
+  CntrEventsTable = ets:new(cntr_events, [public]),
+  wolff_tests:install_event_logging(?FUNCTION_NAME, CntrEventsTable, false),
   ClientId = <<"supervised-wolff-client">>,
   _ = application:stop(wolff), %% ensure stopped
   {ok, _} = application:ensure_all_started(wolff),
@@ -32,9 +34,16 @@ supervised_client_test() ->
   ok = application:stop(wolff),
   ?assertEqual(undefined, whereis(wolff_sup)),
   ?assertEqual(undefined, whereis(wolff_stats)),
+  [1,-1] = wolff_tests:get_telemetry_seq(CntrEventsTable, [wolff,queuing]),
+  [1] = wolff_tests:get_telemetry_seq(CntrEventsTable, [wolff,success]),
+  [1,-1] = wolff_tests:get_telemetry_seq(CntrEventsTable, [wolff,inflight]),
+  ets:delete(CntrEventsTable),
+  wolff_tests:deinstall_event_logging(?FUNCTION_NAME),
   ok.
 
 supervised_producers_test() ->
+  CntrEventsTable = ets:new(cntr_events, [public]),
+  wolff_tests:install_event_logging(?FUNCTION_NAME, CntrEventsTable, false),
   ClientId = <<"supervised-producers">>,
   _ = application:stop(wolff), %% ensure stopped
   {ok, _} = application:ensure_all_started(wolff),
@@ -54,6 +63,11 @@ supervised_producers_test() ->
   ok = wolff:stop_and_delete_supervised_client(ClientId),
   ?assertEqual([], supervisor:which_children(wolff_client_sup)),
   ok = application:stop(wolff),
+  [1,-1] = wolff_tests:get_telemetry_seq(CntrEventsTable, [wolff,queuing]),
+  [1] = wolff_tests:get_telemetry_seq(CntrEventsTable, [wolff,success]),
+  [1,-1] = wolff_tests:get_telemetry_seq(CntrEventsTable, [wolff,inflight]),
+  ets:delete(CntrEventsTable),
+  wolff_tests:deinstall_event_logging(?FUNCTION_NAME),
   ok.
 
 client_restart_test() ->
@@ -70,6 +84,8 @@ client_restart_2_test() ->
   test_client_restart(ClientId, Topic, Partition).
 
 test_client_restart(ClientId, Topic, Partition) ->
+  CntrEventsTable = ets:new(cntr_events, [public]),
+  wolff_tests:install_event_logging(?FUNCTION_NAME, CntrEventsTable, false),
   _ = application:stop(wolff), %% ensure stopped
   {ok, _} = application:ensure_all_started(wolff),
   ClientCfg = #{connection_strategy => per_broker},
@@ -94,6 +110,11 @@ test_client_restart(ClientId, Topic, Partition) ->
   ok = wolff:stop_and_delete_supervised_client(ClientId),
   ?assertEqual([], supervisor:which_children(wolff_client_sup)),
   ok = application:stop(wolff),
+  [1,-1,1,-1] = wolff_tests:get_telemetry_seq(CntrEventsTable, [wolff,queuing]),
+  [1,1] = wolff_tests:get_telemetry_seq(CntrEventsTable, [wolff,success]),
+  [1,-1,1,-1] = wolff_tests:get_telemetry_seq(CntrEventsTable, [wolff,inflight]),
+  ets:delete(CntrEventsTable),
+  wolff_tests:deinstall_event_logging(?FUNCTION_NAME),
   ok.
 
 %% Test against a bad host.
@@ -108,6 +129,8 @@ bad_host_test() ->
   ok = wolff:stop_and_delete_supervised_client(ClientId).
 
 producer_restart_test() ->
+  CntrEventsTable = ets:new(cntr_events, [public]),
+  wolff_tests:install_event_logging(?FUNCTION_NAME, CntrEventsTable, false),
   ClientId = <<"producer-restart">>,
   Topic = <<"test-topic">>,
   Partition = 0,
@@ -144,6 +167,11 @@ producer_restart_test() ->
   ok = wolff:stop_and_delete_supervised_client(ClientId),
   ?assertEqual([], supervisor:which_children(wolff_client_sup)),
   ok = application:stop(wolff),
+  [1,-1,1,-1,1,-2] = wolff_tests:get_telemetry_seq(CntrEventsTable, [wolff,queuing]),
+  [1,2] = wolff_tests:get_telemetry_seq(CntrEventsTable, [wolff,success]),
+  [1,-1,1,2,-2] = wolff_tests:get_telemetry_seq(CntrEventsTable, [wolff,inflight]),
+  ets:delete(CntrEventsTable),
+  wolff_tests:deinstall_event_logging(?FUNCTION_NAME),
   ok.
 
 stop_with_name_test() ->
@@ -174,6 +202,8 @@ partition_count_refresh_test_() ->
    fun test_partition_count_refresh/0}.
 
 test_partition_count_refresh() ->
+  CntrEventsTable = ets:new(cntr_events, [public]),
+  wolff_tests:install_event_logging(?FUNCTION_NAME, CntrEventsTable, false),
   ClientId = <<"test-add-more-partitions">>,
   Topic = <<"test-topic-3">>,
   _ = application:stop(wolff), %% ensure stopped
@@ -202,7 +232,13 @@ test_partition_count_refresh() ->
   %% wait for the new partition to be discovered
   timer:sleep(timer:seconds(IntervalSeconds * 2)),
   {Partition1, _} = wolff:send_sync(Producers, [Msg], 3000),
-  ?assertEqual(Partitions0, Partition1).
+  ?assertEqual(Partitions0, Partition1),
+  [1,1] = wolff_tests:get_telemetry_seq(CntrEventsTable, [wolff,success]),
+  [1,-1,1,-1] = wolff_tests:get_telemetry_seq(CntrEventsTable, [wolff,queuing]),
+  [1,-1,1,-1] = wolff_tests:get_telemetry_seq(CntrEventsTable, [wolff,inflight]),
+  ets:delete(CntrEventsTable),
+  wolff_tests:deinstall_event_logging(?FUNCTION_NAME),
+  ok.
 
 non_existing_topic_test() ->
   ClientId = atom_to_binary(?FUNCTION_NAME),
