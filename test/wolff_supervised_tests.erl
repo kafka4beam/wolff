@@ -264,7 +264,132 @@ start_producers_with_dead_client_test() ->
   ok = wolff:stop_and_delete_supervised_client(ClientId),
   ok.
 
+fail_retry_success_test() ->
+  CntrEventsTable = ets:new(cntr_events, [public]),
+  wolff_tests:install_event_logging(?FUNCTION_NAME, CntrEventsTable, false),
+  ClientId = <<"supervised-producers">>,
+  _ = application:stop(wolff), %% ensure stopped
+  {ok, _} = application:ensure_all_started(wolff),
+  ClientCfg = client_config(),
+  {ok, _ClientPid} = wolff:ensure_supervised_client(ClientId, ?HOSTS, ClientCfg),
+  ProducerCfg0 = producer_config(),
+  ProducerCfg = ProducerCfg0#{required_acks => all_isr},
+  {ok, Producers} = wolff:ensure_supervised_producers(ClientId, <<"test-topic">>, ProducerCfg),
+  Msg = #{key => ?KEY, value => <<"value">>},
+  Self = self(),
+  AckFun = fun(_Partition, _BaseOffset) -> Self ! acked, ok end,
+  try
+    telemetry:attach_many(tap, wolff_tests:telemetry_events(),
+      fun(EventId, MetricsData, Metadata, state) ->
+        Self ! {telemetry, EventId, MetricsData, Metadata},
+        ok
+      end,
+      state),
+    with_meck(kpro, find,
+      fun(error_code, _Resp) ->
+           ?unknown_server_error;
+         (Code, Resp) ->
+           meck:passthrough([Code, Resp])
+      end,
+      fun() ->
+        {_Partition, ProducerPid} = wolff:send(Producers, [Msg], AckFun),
+        {ok, _} = wait_telemetry_event([wolff, failed]),
+        ok
+      end),
+    {ok, _} = wait_telemetry_event([wolff, retried_success]),
+    [1] = wolff_tests:get_telemetry_seq(CntrEventsTable, [wolff, failed]),
+    [1] = wolff_tests:get_telemetry_seq(CntrEventsTable, [wolff, retried]),
+    [1] = wolff_tests:get_telemetry_seq(CntrEventsTable, [wolff, retried_success]),
+    ok
+  after
+      ok = wolff:stop_and_delete_supervised_producers(Producers),
+      ok = wolff:stop_and_delete_supervised_client(ClientId),
+      ok = application:stop(wolff),
+      telemetry:detach(tap),
+      wolff_tests:deinstall_event_logging(?FUNCTION_NAME),
+      ets:delete(CntrEventsTable),
+      ok
+  end,
+  ok.
+
+fail_retry_failed_test() ->
+  {timeout, 60000,
+   begin
+     CntrEventsTable = ets:new(cntr_events, [public]),
+     wolff_tests:install_event_logging(?FUNCTION_NAME, CntrEventsTable, false),
+     ClientId = <<"supervised-producers">>,
+     _ = application:stop(wolff), %% ensure stopped
+     {ok, _} = application:ensure_all_started(wolff),
+     ClientCfg = client_config(),
+     {ok, _ClientPid} = wolff:ensure_supervised_client(ClientId, ?HOSTS, ClientCfg),
+     ProducerCfg0 = producer_config(),
+     ProducerCfg = ProducerCfg0#{required_acks => all_isr},
+     {ok, Producers} = wolff:ensure_supervised_producers(ClientId, <<"test-topic">>, ProducerCfg),
+     Msg = #{key => ?KEY, value => <<"value">>},
+     Self = self(),
+     AckFun = fun(_Partition, _BaseOffset) -> Self ! acked, ok end,
+     try
+       telemetry:attach_many(tap, wolff_tests:telemetry_events(),
+         fun(EventId, MetricsData, Metadata, state) ->
+           Self ! {telemetry, EventId, MetricsData, Metadata},
+           ok
+         end,
+         state),
+       with_meck(kpro, find,
+         fun(error_code, #{base_offset := _} = _Resp) ->
+              ?unknown_server_error;
+            (Code, Resp) ->
+              meck:passthrough([Code, Resp])
+         end,
+         fun() ->
+           {_Partition, ProducerPid} = wolff:send(Producers, [Msg], AckFun),
+           {ok, _} = wait_telemetry_event([wolff, failed], #{timeout => 5_000}),
+           %% simulate a disconnection
+           ProducerPid ! {leader_connection, {down, test}},
+           {ok, _} = wait_telemetry_event([wolff, retried_failed], #{timeout => 30_000}),
+           ok
+         end),
+       {ok, _} = wait_telemetry_event([wolff, retried_success]),
+       [1 | _] = wolff_tests:get_telemetry_seq(CntrEventsTable, [wolff, failed]),
+       [1 | _] = wolff_tests:get_telemetry_seq(CntrEventsTable, [wolff, retried]),
+       [1 | _] = wolff_tests:get_telemetry_seq(CntrEventsTable, [wolff, retried_failed]),
+       [1] = wolff_tests:get_telemetry_seq(CntrEventsTable, [wolff, retried_success]),
+       ok
+     after
+         ok = wolff:stop_and_delete_supervised_producers(Producers),
+         ok = wolff:stop_and_delete_supervised_client(ClientId),
+         ok = application:stop(wolff),
+         telemetry:detach(tap),
+         wolff_tests:deinstall_event_logging(?FUNCTION_NAME),
+         ets:delete(CntrEventsTable),
+         ok
+     end,
+     ok
+   end}.
+
 %% helpers
+with_meck(Mod, FnName, MockedFn, Action) ->
+    ok = meck:new(Mod, [non_strict, no_history, no_link, passthrough]),
+    ok = meck:expect(Mod, FnName, MockedFn),
+    try
+        Action()
+    after
+        meck:unload(Mod)
+    end.
+
+wait_telemetry_event(EventName) ->
+    wait_telemetry_event(EventName, #{timeout => 10_000}).
+
+wait_telemetry_event(EventName, Opts) ->
+    Timeout = maps:get(timeout, Opts, 10_000),
+    receive
+      {telemetry, EventName, MetricsData, Metadata} ->
+        {ok, {EventName, MetricsData, Metadata}}
+    after
+      Timeout ->
+        {timeout, EventName}
+    end.
+
 wait_for_pid(F) ->
   Pid = F(),
   case is_pid(Pid) of

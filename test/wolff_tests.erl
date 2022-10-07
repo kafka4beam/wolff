@@ -6,6 +6,7 @@
 -export([get_telemetry_seq/2,
          handle_telemetry_event/4,
          telemetry_id/0,
+         telemetry_events/0,
          install_event_logging/1,
          install_event_logging/3,
          deinstall_event_logging/1,
@@ -630,7 +631,7 @@ handle_telemetry_event(
       log_events := LogEvents}
 ) ->
     case EventRecordTable =/= none of
-        true -> 
+        true ->
             PastEvents = case ets:lookup(EventRecordTable, EventId) of
                              [] -> [];
                              [{_EventId, PE}] -> PE
@@ -638,11 +639,11 @@ handle_telemetry_event(
             NewEventList = [ #{metrics_data => MetricsData,
                                meta_data => MetaData} | PastEvents],
             ets:insert(EventRecordTable, {EventId, NewEventList});
-        false -> 
+        false ->
             ok
     end,
     case LogEvents of
-        true -> 
+        true ->
             ct:pal("<<< telemetry event >>>\n[event id]: ~p\n[metrics data]: ~p\n[meta data]: ~p\n",
                    [EventId, MetricsData, MetaData]);
         false ->
@@ -658,9 +659,9 @@ install_event_logging(TestCaseName) ->
 
 install_event_logging(TestCaseName, EventRecordTable, LogEvents) ->
     case LogEvents of
-        true -> 
+        true ->
             ct:pal("=== Starting event logging for test case ~p ===\n", [TestCaseName]);
-        false -> 
+        false ->
             ok
     end,
     ok = application:ensure_started(telemetry),
@@ -669,24 +670,26 @@ install_event_logging(TestCaseName, EventRecordTable, LogEvents) ->
     telemetry:attach_many(
         %% unique handler id
         telemetry_id(),
-        [
-            [wolff, dropped],
-            [wolff, dropped_queue_full],
-            [wolff, matched],
-            [wolff, queuing],
-            [wolff, retried],
-            [wolff, failed],
-            [wolff, inflight],
-            [wolff, retried_failed],
-            [wolff, retried_success],
-            [wolff, success]
-        ],
+        telemetry_events(),
         fun wolff_tests:handle_telemetry_event/4,
         #{record_table => EventRecordTable,
           log_events => LogEvents}
     ).
 
+telemetry_events() ->
+    [
+      [wolff, dropped],
+      [wolff, dropped_queue_full],
+      [wolff, matched],
+      [wolff, queuing],
+      [wolff, retried],
+      [wolff, failed],
+      [wolff, inflight],
+      [wolff, retried_failed],
+      [wolff, retried_success],
+      [wolff, success]
+    ].
+
 deinstall_event_logging(TestCaseName) ->
     telemetry:detach(telemetry_id()),
     ct:pal("=== Stopping event logging for test case ~p ===\n", [TestCaseName]).
-
