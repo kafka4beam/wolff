@@ -19,6 +19,5 @@ _build
 .idea
 *.iml
 rebar3.crashdump
-rebar.lock
 test-data/
 doc/

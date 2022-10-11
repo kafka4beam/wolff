@@ -174,6 +174,19 @@ wolff:send(Producers, [Msg], AckFun).
   Non-negative integer to refresh topic metadata in order to auto-discover newly added partitions.
   Set `0` to disable auto-discover.
 
+## Beam Telemetry Hooks
+
+[Beam Telemetry](https://github.com/beam-telemetry/telemetry) is a library for
+defining telemetry events. Wolff defines such telemetry events. Users of Wolff
+can attach functions to the events, for example, to record when a message has
+been successfully sent to Kafka. Wolff's telemetry events are described in the
+`wolff_metrics` module. One can read more about how to attach code to the
+events in [Beam Telemetry's documentation](https://github.com/beam-telemetry/telemetry). 
+The third parameter of the Beam Telemetry handler function is a meta data map.
+One can send a custom meta data map for each Kafka producer instance by setting
+the Kafka producer configuration parameter `telemetry_meta_data` to the map one
+wants to use.
+
 ## How to Test
 
 Start Kafka in docker containers from dokcer-compose.yml in this repo.
