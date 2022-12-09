@@ -1,6 +1,9 @@
 %% -*-: erlang -*-
-{"1.5.8",
+{"1.5.9",
   [
+    {"1.5.8",
+     [ {load_module, wolff_producers, brutal_purge, soft_purge, []}
+     ]},
     {<<"1\\.5\\.[2-7]">>,
      [ {load_module, wolff, brutal_purge, soft_purge, []}
      , {load_module, wolff_producers, brutal_purge, soft_purge, []}
@@ -19,6 +22,9 @@
     }
   ],
   [
+    {"1.5.8",
+     [ {load_module, wolff_producers, brutal_purge, soft_purge, []}
+     ]},
     {<<"1\\.5\\.[2-7]">>,
      [ {load_module, wolff, brutal_purge, soft_purge, []}
      , {load_module, wolff_producers, brutal_purge, soft_purge, []}
