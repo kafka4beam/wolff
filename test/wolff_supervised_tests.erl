@@ -292,7 +292,7 @@ fail_retry_success_test() ->
            meck:passthrough([Code, Resp])
       end,
       fun() ->
-        {_Partition, ProducerPid} = wolff:send(Producers, [Msg], AckFun),
+        {_Partition, _ProducerPid} = wolff:send(Producers, [Msg], AckFun),
         {ok, _} = wait_telemetry_event([wolff, failed]),
         ok
       end),

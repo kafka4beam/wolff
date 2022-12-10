@@ -1,10 +1,9 @@
-* 1.7.1
+* 1.7.1 (merged 1.5.9)
   - Fix: when picking a producer PID, if it was dead, it could lead to an error being raised. [#37](https://github.com/kafka4beam/wolff/pull/37)
 * 1.6.5
   - Upgrade `kafka_protocol` from version 4.0.3 to version to 4.1.0 for SASL/GSSAPI auth support.
-* 1.6.4 (merged from 1.5.8)
-  - Fix type specs for producers and producer config. [#31](https://github.com/kafka4beam/wolff/pull/31)
-* 1.6.3 (merged from 1.5.7)
+* 1.6.4 (merged 1.5.8)
+* 1.6.3 (merged 1.5.7)
   - Stop supervised producer if failed to start. Otherwise the caller may have to call the wolff:stop_and_delete_supervised_producers/3
     after matching an error return. If they don't, then it may appear as a resource leak. [#26](https://github.com/kafka4beam/wolff/pull/26)
   - Ensure `{{Topic, Partition}, Connection}` record exists even if there are errors returned at partition level metadata.
