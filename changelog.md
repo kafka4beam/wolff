@@ -1,6 +1,6 @@
 * 1.5.9
   - Fix: when picking a producer PID, if it was dead, it could lead to an error being raised. [#38](https://github.com/kafka4beam/wolff/pull/38)
-  * 1.5.8
+* 1.5.8
   - Fix type specs for producers and producer config. [#31](https://github.com/kafka4beam/wolff/pull/31)
 * 1.5.7
   - Stop supervised producer if failed to start. Otherwise the caller may have to call the wolff:stop_and_delete_supervised_producers/3
