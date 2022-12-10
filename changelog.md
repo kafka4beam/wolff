@@ -1,3 +1,5 @@
+* 1.7.1
+  - Fix: when picking a producer PID, if it was dead, it could lead to an error being raised. [#37](https://github.com/kafka4beam/wolff/pull/37)
 * 1.6.5
   - Upgrade `kafka_protocol` from version 4.0.3 to version to 4.1.0 for SASL/GSSAPI auth support.
 * 1.6.4 (merged from 1.5.8)
@@ -36,4 +38,3 @@
   - Started using github action for CI
 * 1.5.1
   - Fix: connection DOWN reason. Should not be a pid, otherwise a producer may not attempt to reconnect.
-
