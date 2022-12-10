@@ -139,18 +139,18 @@ pick_producer(#{workers := Workers,
   Partition = pick_partition(Count, Partitioner, Batch),
   do_pick_producer(Partitioner, Partition, Count, Workers).
 
-do_pick_producer(Partitioner, Partition, Count, Workers) ->
-  Pid = lookup_producer(Workers, Partition),
-  case is_pid(Pid) andalso is_process_alive(Pid) of
-    true -> {Partition, Pid};
+do_pick_producer(Partitioner, Partition0, Count, Workers) ->
+  Pid0 = lookup_producer(Workers, Partition0),
+  case is_pid(Pid0) andalso is_process_alive(Pid0) of
+    true -> {Partition0, Pid0};
     false when Partitioner =:= random ->
-      pick_next_alive(Workers, Partition, Count);
+      pick_next_alive(Workers, Partition0, Count);
     false when Partitioner =:= roundrobin ->
-      R = {Partition, Pid} = pick_next_alive(Workers, Partition, Count),
-      _ = put(wolff_roundrobin, (Partition + 1) rem Count),
+      R = {Partition1, _Pid1} = pick_next_alive(Workers, Partition0, Count),
+      _ = put(wolff_roundrobin, (Partition1 + 1) rem Count),
       R;
     false ->
-      erlang:error({producer_down, Pid})
+      erlang:error({producer_down, Pid0})
   end.
 
 pick_next_alive(Workers, Partition, Count) ->
