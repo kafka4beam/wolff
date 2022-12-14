@@ -1,3 +1,5 @@
+* 1.7.2
+  - Upgrade `kafka_protocol` from version 4.1.0 to 4.1.1 to enable customizing the SNI without needing to set the `verify_peer` option.
 * 1.7.1 (merged 1.5.9)
   - Fix: when picking a producer PID, if it was dead, it could lead to an error being raised. [#37](https://github.com/kafka4beam/wolff/pull/37)
 * 1.6.5
