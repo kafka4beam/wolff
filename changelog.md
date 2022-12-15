@@ -1,3 +1,5 @@
+* 1.7.3
+  - Upgrade `kafka_protocol` from version 4.1.1 to 4.1.2 to allow handling multiply nested wrapped secrets.
 * 1.7.2
   - Upgrade `kafka_protocol` from version 4.1.0 to 4.1.1 to enable customizing the SNI without needing to set the `verify_peer` option.
 * 1.7.1 (merged 1.5.9)
