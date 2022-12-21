@@ -86,7 +86,9 @@ start_linked_producers(ClientId, ClientPid, Topic, ProducerCfg) ->
   end.
 
 stop_linked(#{workers := Workers}) when is_map(Workers) ->
-  lists:foreach(fun({_, Pid}) -> wolff_producer:stop(Pid) end,
+  lists:foreach(
+    fun({_, Pid}) ->
+      wolff_producer:stop(Pid) end,
                 maps:to_list(Workers)).
 
 %% @doc Start supervised producers.
