@@ -476,7 +476,7 @@ handle_kafka_ack(#kpro_rsp{api = produce,
                   erlang:throw(ErrorCode)
           end;
       _ ->
-          ok 
+          St
   end.
 
 do_handle_kafka_ack(BaseOffset,
