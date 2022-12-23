@@ -180,7 +180,7 @@ producer_restart_test() ->
   ok = wolff:stop_and_delete_supervised_client(ClientId),
   ?assertEqual([], supervisor:which_children(wolff_client_sup)),
   ok = application:stop(wolff),
-  [1,2] = wolff_tests:get_telemetry_seq(CntrEventsTable, [wolff,success]),
+  [1,1] = wolff_tests:get_telemetry_seq(CntrEventsTable, [wolff,success]),
   ?assert_eq_optional_tail(
      wolff_test_utils:dedup_list(get_telemetry_seq(CntrEventsTable, [wolff, queuing])),
      [0,1,0,1,0,1,2,0]),

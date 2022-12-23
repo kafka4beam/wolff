@@ -360,11 +360,10 @@ resend_sent_reqs(#{sent_reqs := SentReqs,
                    config := Config
                   } = St) ->
   F = fun(#{request := Req0,
-            batch_size := BatchSize,
             attempts := Attempts} = OldSentReq,
           Acc) ->
           Req = Req0#kpro_req{ref = make_ref()}, %% make a new reference
-          wolff_metrics:retried_inc(Config, BatchSize),
+          wolff_metrics:retried_inc(Config, 1),
           ok = request_async(Conn, Req),
           NewSent = OldSentReq#{request => Req,
                                 attempts => Attempts + 1},
@@ -433,7 +432,6 @@ send_to_kafka(#{sent_reqs := Sent,
     replayq:pop(Q, #{bytes_limit => BytesLimit, count_limit => 999999999}),
   {FlatBatch, Calls} = get_flat_batch(Items, [], []),
   [_ | _] = FlatBatch, %% assert
-  BatchSize = erlang:length(FlatBatch),
   wolff_metrics:queuing_set(Config, replayq:count(NewQ)),
   NewSentReqsCount = SentReqsCount + 1,
   wolff_metrics:inflight_set(Config, NewSentReqsCount),
@@ -446,7 +444,6 @@ send_to_kafka(#{sent_reqs := Sent,
   NewSent = #{request => Req,
               q_ack_ref => QAckRef,
               calls => Calls,
-              batch_size => BatchSize,
               attempts => 1},
   St2 = St1#{sent_reqs := queue:in(NewSent, Sent),
              sent_reqs_count := NewSentReqsCount
@@ -512,7 +509,6 @@ handle_kafka_ack(#kpro_rsp{api = produce,
   BaseOffset = kpro:find(base_offset, PartitionRsp),
   case queue:peek(SentReqs) of
       {value, #{request := #kpro_req{ref = Ref},
-                batch_size := BatchSize,
                 attempts := Attempts}} ->
           case ErrorCode =:= ?no_error of
               true ->
@@ -523,8 +519,8 @@ handle_kafka_ack(#kpro_rsp{api = produce,
                    , sent_reqs_count := SentReqsCount
                    , partition := Partition
                    } = St,
-                  inc_sent_failed(Config, BatchSize, AttemptedBefore),
-                  wolff_metrics:inflight_set(Config, SentReqsCount - BatchSize),
+                  inc_sent_failed(Config, 1, AttemptedBefore),
+                  wolff_metrics:inflight_set(Config, SentReqsCount - 1),
                   log_warn(Topic, Partition,
                            "error_in_produce_response",
                            #{error_code => ErrorCode}),
@@ -542,12 +538,11 @@ do_handle_kafka_ack(BaseOffset,
                       replayq := Q,
                       config := Config
                      } = St) ->
-    {{value, #{batch_size := BatchSize,
-               q_ack_ref := Q_AckRef,
+    {{value, #{q_ack_ref := Q_AckRef,
                calls := Calls,
                attempts := Attempts}}, NewSentReqs} = queue:out(SentReqs),
     AttemptedBefore = Attempts > 1,
-    inc_sent_success(Config, BatchSize, AttemptedBefore),
+    inc_sent_success(Config, 1, AttemptedBefore),
     NewSentReqsCount = SentReqsCount - 1,
     wolff_metrics:inflight_set(Config, NewSentReqsCount),
     ok = replayq:ack(Q, Q_AckRef),
@@ -777,9 +772,8 @@ handle_overflow(#{replayq := Q,
   ok = replayq:ack(NewQ, QAckRef),
   {FlatBatch, Calls} = get_flat_batch(Items, [], []),
   [_ | _] = FlatBatch, %% assert
-  FlatBatchSize = length(FlatBatch),
-  wolff_metrics:dropped_queue_full_inc(Config, FlatBatchSize),
-  wolff_metrics:dropped_inc(Config, FlatBatchSize),
+  wolff_metrics:dropped_queue_full_inc(Config, 1),
+  wolff_metrics:dropped_inc(Config, 1),
   wolff_metrics:queuing_set(Config, replayq:count(NewQ)),
   ok = maybe_log_discard(St, length(Calls)),
   NewPendingAcks = evaluate_pending_ack_funs(PendingAcks, Calls, ?buffer_overflow_discarded),
@@ -828,11 +822,11 @@ inc_sent_failed(Config, NrOfFailedMsgs, _HasSent = true) ->
 inc_sent_failed(Config, NrOfFailedMsgs, _HasSent) ->
     wolff_metrics:failed_inc(Config, NrOfFailedMsgs).
 
-inc_sent_success(Config, NrOfFailedMsgs, _HasSent = true) ->
-    wolff_metrics:success_inc(Config, NrOfFailedMsgs),
-    wolff_metrics:retried_success_inc(Config, NrOfFailedMsgs);
-inc_sent_success(Config, NrOfFailedMsgs, _HasSent) ->
-    wolff_metrics:success_inc(Config, NrOfFailedMsgs).
+inc_sent_success(Config, NrOfMsgs, _HasSent = true) ->
+    wolff_metrics:success_inc(Config, NrOfMsgs),
+    wolff_metrics:retried_success_inc(Config, NrOfMsgs);
+inc_sent_success(Config, NrOfMsgs, _HasSent) ->
+    wolff_metrics:success_inc(Config, NrOfMsgs).
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").

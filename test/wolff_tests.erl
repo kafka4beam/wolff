@@ -166,7 +166,7 @@ send_smallest_msg_max_batch_test() ->
   ?assert_eq_optional_tail(
      wolff_test_utils:dedup_list(get_telemetry_seq(CntrEventsTable, [wolff, inflight])),
      [0,1,0]),
-  [Count] = get_telemetry_seq(CntrEventsTable, [wolff, success]),
+  [1] = get_telemetry_seq(CntrEventsTable, [wolff, success]),
   ets:delete(CntrEventsTable),
   deinstall_event_logging(?FUNCTION_NAME).
 
@@ -296,15 +296,15 @@ replayq_overflow_test() ->
     ok = wolff:stop_producers(Producers),
     ok = stop_client(Client)
   end,
-  [2] = get_telemetry_seq(CntrEventsTable, [wolff, dropped]),
-  [2] = get_telemetry_seq(CntrEventsTable, [wolff, dropped_queue_full]),
+  [1] = get_telemetry_seq(CntrEventsTable, [wolff, dropped]),
+  [1] = get_telemetry_seq(CntrEventsTable, [wolff, dropped_queue_full]),
   ?assert_eq_optional_tail(
      wolff_test_utils:dedup_list(get_telemetry_seq(CntrEventsTable, [wolff, queuing])),
      [0,1,2,1,0]),
   ?assert_eq_optional_tail(
      wolff_test_utils:dedup_list(get_telemetry_seq(CntrEventsTable, [wolff, inflight])),
      [0,1,0]),
-  [2] = get_telemetry_seq(CntrEventsTable, [wolff, success]),
+  [1] = get_telemetry_seq(CntrEventsTable, [wolff, success]),
   ets:delete(CntrEventsTable),
   deinstall_event_logging(?FUNCTION_NAME).
 
@@ -375,9 +375,9 @@ replayq_highmem_overflow_test() ->
   ?assert_eq_optional_tail(
      wolff_test_utils:dedup_list(get_telemetry_seq(CntrEventsTable, [wolff, inflight])),
      [0,1,0]),
-  [2, 2] = show( get_telemetry_seq(CntrEventsTable, [wolff, dropped]) ),
-  [2, 2] = show( get_telemetry_seq(CntrEventsTable, [wolff, dropped_queue_full]) ),
-  [2] = show( get_telemetry_seq(CntrEventsTable, [wolff, success]) ),
+  [1, 1] = show( get_telemetry_seq(CntrEventsTable, [wolff, dropped]) ),
+  [1, 1] = show( get_telemetry_seq(CntrEventsTable, [wolff, dropped_queue_full]) ),
+  [1] = show( get_telemetry_seq(CntrEventsTable, [wolff, success]) ),
   ets:delete(CntrEventsTable),
   deinstall_event_logging(?FUNCTION_NAME).
 
