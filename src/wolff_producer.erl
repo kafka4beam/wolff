@@ -764,7 +764,7 @@ handle_overflow(St, Overflow) when Overflow =< 0 ->
     St;
 handle_overflow(#{replayq := Q,
                   pending_acks := PendingAcks,
-                  config := Config
+                  config := Config = #{max_batch_bytes := BytesLimit}
                  } = St,
                 Overflow) ->
   {NewQ, QAckRef, Items} =
@@ -772,8 +772,15 @@ handle_overflow(#{replayq := Q,
   ok = replayq:ack(NewQ, QAckRef),
   {FlatBatch, Calls} = get_flat_batch(Items, [], []),
   [_ | _] = FlatBatch, %% assert
-  wolff_metrics:dropped_queue_full_inc(Config, 1),
-  wolff_metrics:dropped_inc(Config, 1),
+  %% since we're discarding a number of messages which would become
+  %% batches, the best we can do is estimate to how many batches those
+  %% would correspond to.
+  EstimatedNumOfBatches = case BytesLimit == 0 of
+                              true -> 1;
+                              false -> round(math:ceil(Overflow / BytesLimit))
+                          end,
+  wolff_metrics:dropped_queue_full_inc(Config, EstimatedNumOfBatches),
+  wolff_metrics:dropped_inc(Config, EstimatedNumOfBatches),
   wolff_metrics:queuing_set(Config, replayq:count(NewQ)),
   ok = maybe_log_discard(St, length(Calls)),
   NewPendingAcks = evaluate_pending_ack_funs(PendingAcks, Calls, ?buffer_overflow_discarded),
