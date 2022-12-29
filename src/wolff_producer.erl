@@ -299,22 +299,20 @@ handle_cast(_Cast, St) ->
 code_change(_OldVsn, St, _Extra) ->
   {ok, St}.
 
-terminate(_, State = #{replayq := Q}) ->
+terminate(_Reason, State = #{replayq := Q}) ->
   ok = replayq:close(Q),
   clear_gauges(State, Q),
   ok;
-terminate(_, State) ->
-  clear_gauges(State, undefined),
+terminate(_Reason, _State = #{config := Config}) ->
+  wolff_metrics:inflight_set(Config, 0),
+  wolff_metrics:queuing_set(Config, 0),
+  ok;
+terminate(_Reason, _State) ->
   ok.
 
-clear_gauges(#{config := Config}, MaybeQ) ->
+clear_gauges(#{config := Config}, Q) ->
     wolff_metrics:inflight_set(Config, 0),
-    case MaybeQ of
-        undefined ->
-            ok;
-        Q ->
-            maybe_reset_queuing(Config, Q)
-    end,
+    maybe_reset_queuing(Config, Q),
     ok;
 clear_gauges(_State, _MaybeQ) ->
     ok.
