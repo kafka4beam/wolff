@@ -522,7 +522,6 @@ handle_kafka_ack(#kpro_rsp{api = produce,
                    , partition := Partition
                    } = St,
                   inc_sent_failed(Config, 1, AttemptedBefore),
-                  wolff_metrics:inflight_set(Config, SentReqsCount - 1),
                   log_warn(Topic, Partition,
                            "error_in_produce_response",
                            #{error_code => ErrorCode}),
