@@ -315,6 +315,8 @@ clear_gauges(#{config := Config}, MaybeQ) ->
         Q ->
             maybe_reset_queuing(Config, Q)
     end,
+    ok;
+clear_gauges(_State, _MaybeQ) ->
     ok.
 
 maybe_reset_queuing(Config, Q) ->
@@ -818,13 +820,11 @@ put_overflow_log_state(Ts, Cnt, Acc) ->
   ok.
 
 inc_sent_failed(Config, NrOfFailedMsgs, _HasSent = true) ->
-    wolff_metrics:failed_inc(Config, NrOfFailedMsgs),
     wolff_metrics:retried_failed_inc(Config, NrOfFailedMsgs);
 inc_sent_failed(Config, NrOfFailedMsgs, _HasSent) ->
     wolff_metrics:failed_inc(Config, NrOfFailedMsgs).
 
 inc_sent_success(Config, NrOfMsgs, _HasSent = true) ->
-    wolff_metrics:success_inc(Config, NrOfMsgs),
     wolff_metrics:retried_success_inc(Config, NrOfMsgs);
 inc_sent_success(Config, NrOfMsgs, _HasSent) ->
     wolff_metrics:success_inc(Config, NrOfMsgs).
