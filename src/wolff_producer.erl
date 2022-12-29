@@ -725,17 +725,17 @@ enqueue_calls(Calls, #{replayq := Q,
                        partition := Partition,
                        config := Config0
                       } = St0) ->
-  {QueueItems, PendingAcks, CallByteSize, _NrOfMsgs} =
+  {QueueItems, PendingAcks, CallByteSize} =
     lists:foldl(
-      fun(?SEND_REQ(_From, Batch, AckFun), {Items, PendingAcksIn, Size, NrOfMsgs}) ->
+      fun(?SEND_REQ(_From, Batch, AckFun), {Items, PendingAcksIn, Size}) ->
           CallId = make_call_id(CallIdBase),
           %% keep callback funs in memory, do not seralize it into queue because
           %% saving anonymous function to disk may easily lead to badfun exception
           %% in case of restart on newer version beam.
           PendingAcksOut = PendingAcksIn#{CallId => ?ACK_CB(AckFun, Partition)},
           NewItems = [make_queue_item(CallId, Batch) | Items],
-          {NewItems, PendingAcksOut, Size + batch_bytes(Batch), NrOfMsgs + length(Batch)}
-      end, {[], PendingAcks0, 0, 0}, Calls),
+          {NewItems, PendingAcksOut, Size + batch_bytes(Batch)}
+      end, {[], PendingAcks0, 0}, Calls),
    NewQ = replayq:append(Q, lists:reverse(QueueItems)),
    wolff_metrics:queuing_set(Config0, replayq:count(NewQ)),
    lists:foreach(fun maybe_reply_queued/1, Calls),
