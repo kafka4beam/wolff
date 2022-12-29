@@ -2,8 +2,8 @@
 
 
 -export([
-    inflight_change/2,
-    queuing_change/2,
+    inflight_set/2,
+    queuing_set/2,
     dropped_inc/1,
     dropped_inc/2,
     dropped_queue_full_inc/1,
@@ -23,17 +23,17 @@
 %% Gauges (value can go both up and down):
 %% --------------------------------------
 
-%% @doc Count of messages that are currently queuing. [Gauge]
-queuing_change(Config, Val) ->
+%% @doc Count of requests (batches of messages) that are currently queuing. [Gauge]
+queuing_set(Config, Val) ->
     telemetry:execute([wolff, queuing],
-                      #{counter_inc => Val},
+                      #{gauge_set => Val},
                       telemetry_meta_data(Config)).
 
 %% @doc Count of messages that were sent asynchronously but ACKs are not
 %% received. [Gauge]
-inflight_change(Config, Val) ->
+inflight_set(Config, Val) ->
     telemetry:execute([wolff, inflight],
-                      #{counter_inc => Val},
+                      #{gauge_set => Val},
                       telemetry_meta_data(Config)).
 
 %% Counters (value can only got up):
@@ -104,4 +104,3 @@ success_inc(Config, Val) ->
 
 telemetry_meta_data(Config) ->
     maps:get(telemetry_meta_data, Config, #{}).
-

@@ -75,6 +75,21 @@
 -define(no_queued_reply, no_queued_reply).
 -define(ACK_CB(AckCb, Partition), {AckCb, Partition}).
 
+-type queue_item() :: {kpro:req(), replayq:ack_ref(), [{_CallId, _MsgCount}]}.
+-type state() :: #{ call_id_base := timer:time()
+                  , client_id := wolff:client_id()
+                  , config := config()
+                  , conn := undefined | _
+                  , ?linger_expire_timer := false | timer:tref()
+                  , partition := partition()
+                  , pending_acks := #{} % CallId => AckCb
+                  , produce_api_vsn := undefined | _
+                  , replayq := replayq:q()
+                  , sent_reqs => queue:queue(queue_item())
+                  , sent_reqs_count => non_neg_integer()
+                  , topic := topic()
+                  }.
+
 %% @doc Start a per-partition producer worker.
 %% Configs:
 %% * `replayq_dir': `replayq' config to queue messages on disk in order to survive restart.
@@ -160,6 +175,7 @@ init(St) ->
   self() ! {do_init, St},
   {ok, #{}}.
 
+-spec do_init(map()) -> state().
 do_init(#{client_id := ClientId,
           conn := Conn,
           topic := Topic,
@@ -188,11 +204,19 @@ do_init(#{client_id := ClientId,
   %% received after a normal start)
   _ = erlang:send(self(), ?leader_connection(Conn)),
   %% replayq configs are kept in Q, there is no need to duplicate them
-  Config = maps:without([replayq_dir, replayq_seg_bytes], Config0),
+  Config1 = maps:update_with(
+              telemetry_meta_data,
+              fun(Meta) -> Meta#{partition_id => Partition} end,
+              #{partition_id => Partition},
+              Config0),
+  Config = maps:without([replayq_dir, replayq_seg_bytes], Config1),
+  wolff_metrics:queuing_set(Config, replayq:count(Q)),
+  wolff_metrics:inflight_set(Config, 0),
   St#{replayq => Q,
       config := Config,
       call_id_base => erlang:system_time(microsecond),
       pending_acks => #{}, % CallId => AckCb
+      produce_api_vsn => undefined,
       sent_reqs => queue:new(), % {kpro:req(), replayq:ack_ref(), [{CallId, MsgCount}]}
       sent_reqs_count => 0,
       conn := undefined,
@@ -275,10 +299,33 @@ handle_cast(_Cast, St) ->
 code_change(_OldVsn, St, _Extra) ->
   {ok, St}.
 
-terminate(_, #{replayq := Q}) ->
-  ok = replayq:close(Q);
-terminate(_, _) ->
+terminate(_Reason, State = #{replayq := Q}) ->
+  ok = replayq:close(Q),
+  clear_gauges(State, Q),
+  ok;
+terminate(_Reason, _State = #{config := Config}) ->
+  wolff_metrics:inflight_set(Config, 0),
+  wolff_metrics:queuing_set(Config, 0),
+  ok;
+terminate(_Reason, _State) ->
   ok.
+
+clear_gauges(#{config := Config}, Q) ->
+    wolff_metrics:inflight_set(Config, 0),
+    maybe_reset_queuing(Config, Q),
+    ok;
+clear_gauges(_State, _MaybeQ) ->
+    ok.
+
+maybe_reset_queuing(Config, Q) ->
+    case {replayq:count(Q), is_replayq_durable(Config, Q)} of
+        {0, _} ->
+            wolff_metrics:queuing_set(Config, 0);
+        {_, false} ->
+            wolff_metrics:queuing_set(Config, 0);
+        {_, _} ->
+            ok
+    end.
 
 ensure_ts(Batch) ->
   lists:map(fun(#{ts := _} = Msg) -> Msg;
@@ -310,11 +357,10 @@ resend_sent_reqs(#{sent_reqs := SentReqs,
                    config := Config
                   } = St) ->
   F = fun(#{request := Req0,
-            batch_size := BatchSize,
             attempts := Attempts} = OldSentReq,
           Acc) ->
           Req = Req0#kpro_req{ref = make_ref()}, %% make a new reference
-          wolff_metrics:retried_inc(Config, BatchSize),
+          wolff_metrics:retried_inc(Config, 1),
           ok = request_async(Conn, Req),
           NewSent = OldSentReq#{request => Req,
                                 attempts => Attempts + 1},
@@ -364,7 +410,7 @@ maybe_send_to_kafka_now(#{?linger_expire_timer := LTimer,
   end.
 
 send_to_kafka(#{sent_reqs := Sent,
-                sent_reqs_count := SentCount,
+                sent_reqs_count := SentReqsCount,
                 replayq := Q,
                 config := #{max_batch_bytes := BytesLimit,
                             required_acks := RequiredAcks,
@@ -383,9 +429,9 @@ send_to_kafka(#{sent_reqs := Sent,
     replayq:pop(Q, #{bytes_limit => BytesLimit, count_limit => 999999999}),
   {FlatBatch, Calls} = get_flat_batch(Items, [], []),
   [_ | _] = FlatBatch, %% assert
-  BatchSize = erlang:length(FlatBatch),
-  wolff_metrics:queuing_change(Config, -BatchSize),
-  wolff_metrics:inflight_change(Config, BatchSize),
+  wolff_metrics:queuing_set(Config, replayq:count(NewQ)),
+  NewSentReqsCount = SentReqsCount + 1,
+  wolff_metrics:inflight_set(Config, NewSentReqsCount),
   Req = kpro_req_lib:produce(Vsn, Topic, Partition, FlatBatch,
                              #{ack_timeout => AckTimeout,
                                required_acks => RequiredAcks,
@@ -395,10 +441,9 @@ send_to_kafka(#{sent_reqs := Sent,
   NewSent = #{request => Req,
               q_ack_ref => QAckRef,
               calls => Calls,
-              batch_size => BatchSize,
               attempts => 1},
   St2 = St1#{sent_reqs := queue:in(NewSent, Sent),
-             sent_reqs_count := SentCount + 1
+             sent_reqs_count := NewSentReqsCount
             },
   ok = request_async(Conn, Req),
   ok = send_stats(St2, FlatBatch),
@@ -450,6 +495,7 @@ get_flat_batch([QItem | Rest], Msgs, Calls) ->
   get_flat_batch(Rest, lists:reverse(Batch, Msgs),
                  [{CallId, length(Batch)} | Calls]).
 
+-spec handle_kafka_ack(_, state()) -> state().
 handle_kafka_ack(#kpro_rsp{api = produce,
                            ref = Ref,
                            msg = Rsp
@@ -460,25 +506,27 @@ handle_kafka_ack(#kpro_rsp{api = produce,
   BaseOffset = kpro:find(base_offset, PartitionRsp),
   case queue:peek(SentReqs) of
       {value, #{request := #kpro_req{ref = Ref},
-                batch_size := BatchSize,
                 attempts := Attempts}} ->
           case ErrorCode =:= ?no_error of
               true ->
                   do_handle_kafka_ack(BaseOffset, St);
               false ->
                   AttemptedBefore = Attempts > 1,
-                  inc_sent_failed(Config, BatchSize, AttemptedBefore),
-                  wolff_metrics:inflight_change(Config, -BatchSize),
-                  #{topic := Topic, partition := Partition} = St,
+                  #{ topic := Topic
+                   , sent_reqs_count := SentReqsCount
+                   , partition := Partition
+                   } = St,
+                  inc_sent_failed(Config, 1, AttemptedBefore),
                   log_warn(Topic, Partition,
                            "error_in_produce_response",
                            #{error_code => ErrorCode}),
                   erlang:throw(ErrorCode)
           end;
       _ ->
-          ok 
+          St
   end.
 
+-spec do_handle_kafka_ack(_, state()) -> state().
 do_handle_kafka_ack(BaseOffset,
                     #{sent_reqs := SentReqs,
                       sent_reqs_count := SentReqsCount,
@@ -486,17 +534,17 @@ do_handle_kafka_ack(BaseOffset,
                       replayq := Q,
                       config := Config
                      } = St) ->
-    {{value, #{batch_size := BatchSize,
-               q_ack_ref := Q_AckRef,
+    {{value, #{q_ack_ref := Q_AckRef,
                calls := Calls,
                attempts := Attempts}}, NewSentReqs} = queue:out(SentReqs),
     AttemptedBefore = Attempts > 1,
-    inc_sent_success(Config, BatchSize, AttemptedBefore),
-    wolff_metrics:inflight_change(Config, -BatchSize),
+    inc_sent_success(Config, 1, AttemptedBefore),
+    NewSentReqsCount = SentReqsCount - 1,
+    wolff_metrics:inflight_set(Config, NewSentReqsCount),
     ok = replayq:ack(Q, Q_AckRef),
     NewPendingAcks = evaluate_pending_ack_funs(PendingAcks, Calls, BaseOffset),
     St#{sent_reqs := NewSentReqs,
-        sent_reqs_count := SentReqsCount - 1,
+        sent_reqs_count := NewSentReqsCount,
         pending_acks := NewPendingAcks
        }.
 
@@ -671,19 +719,19 @@ enqueue_calls(Calls, #{replayq := Q,
                        partition := Partition,
                        config := Config0
                       } = St0) ->
-  {QueueItems, PendingAcks, CallByteSize, NrOfMsgs} =
+  {QueueItems, PendingAcks, CallByteSize} =
     lists:foldl(
-      fun(?SEND_REQ(_From, Batch, AckFun), {Items, PendingAcksIn, Size, NrOfMsgs}) ->
+      fun(?SEND_REQ(_From, Batch, AckFun), {Items, PendingAcksIn, Size}) ->
           CallId = make_call_id(CallIdBase),
           %% keep callback funs in memory, do not seralize it into queue because
           %% saving anonymous function to disk may easily lead to badfun exception
           %% in case of restart on newer version beam.
           PendingAcksOut = PendingAcksIn#{CallId => ?ACK_CB(AckFun, Partition)},
           NewItems = [make_queue_item(CallId, Batch) | Items],
-          {NewItems, PendingAcksOut, Size + batch_bytes(Batch), NrOfMsgs + length(Batch)}
-      end, {[], PendingAcks0, 0, 0}, Calls),
+          {NewItems, PendingAcksOut, Size + batch_bytes(Batch)}
+      end, {[], PendingAcks0, 0}, Calls),
    NewQ = replayq:append(Q, lists:reverse(QueueItems)),
-   wolff_metrics:queuing_change(Config0, NrOfMsgs),
+   wolff_metrics:queuing_set(Config0, replayq:count(NewQ)),
    lists:foreach(fun maybe_reply_queued/1, Calls),
    Overflow = case maps:get(drop_if_highmem, Config0, false)
                   andalso replayq:is_mem_only(NewQ)
@@ -720,10 +768,10 @@ handle_overflow(#{replayq := Q,
   ok = replayq:ack(NewQ, QAckRef),
   {FlatBatch, Calls} = get_flat_batch(Items, [], []),
   [_ | _] = FlatBatch, %% assert
-  FlatBatchSize = length(FlatBatch),
-  wolff_metrics:dropped_queue_full_inc(Config, FlatBatchSize),
-  wolff_metrics:dropped_inc(Config, FlatBatchSize),
-  wolff_metrics:queuing_change(Config, -FlatBatchSize),
+  NumOfBatches = length(Items),
+  wolff_metrics:dropped_queue_full_inc(Config, NumOfBatches),
+  wolff_metrics:dropped_inc(Config, NumOfBatches),
+  wolff_metrics:queuing_set(Config, replayq:count(NewQ)),
   ok = maybe_log_discard(St, length(Calls)),
   NewPendingAcks = evaluate_pending_ack_funs(PendingAcks, Calls, ?buffer_overflow_discarded),
   St#{replayq := NewQ, pending_acks := NewPendingAcks}.
@@ -766,16 +814,19 @@ put_overflow_log_state(Ts, Cnt, Acc) ->
   ok.
 
 inc_sent_failed(Config, NrOfFailedMsgs, _HasSent = true) ->
-    wolff_metrics:failed_inc(Config, NrOfFailedMsgs),
     wolff_metrics:retried_failed_inc(Config, NrOfFailedMsgs);
 inc_sent_failed(Config, NrOfFailedMsgs, _HasSent) ->
     wolff_metrics:failed_inc(Config, NrOfFailedMsgs).
 
-inc_sent_success(Config, NrOfFailedMsgs, _HasSent = true) ->
-    wolff_metrics:success_inc(Config, NrOfFailedMsgs),
-    wolff_metrics:retried_success_inc(Config, NrOfFailedMsgs);
-inc_sent_success(Config, NrOfFailedMsgs, _HasSent) ->
-    wolff_metrics:success_inc(Config, NrOfFailedMsgs).
+inc_sent_success(Config, NrOfMsgs, _HasSent = true) ->
+    wolff_metrics:retried_success_inc(Config, NrOfMsgs);
+inc_sent_success(Config, NrOfMsgs, _HasSent) ->
+    wolff_metrics:success_inc(Config, NrOfMsgs).
+
+is_replayq_durable(#{replayq_offload_mode := true}, _Q) ->
+    false;
+is_replayq_durable(_, Q) ->
+    not replayq:is_mem_only(Q).
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").

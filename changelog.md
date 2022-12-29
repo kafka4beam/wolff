@@ -1,3 +1,9 @@
+* 1.7.4
+  - Refactor the gauge metrics to handle multiple workers changing the
+    same gauge. [#41](https://github.com/kafka4beam/wolff/pull/41)
+  - Fix potential bug where the internal state of the producer process
+    could have been swapped by the atom
+    ok. [#41](https://github.com/kafka4beam/wolff/pull/41)
 * 1.7.3
   - Upgrade `kafka_protocol` from version 4.1.1 to 4.1.2 to allow handling multiply nested wrapped secrets.
 * 1.7.2
