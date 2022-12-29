@@ -320,13 +320,10 @@ clear_gauges(_State, _MaybeQ) ->
     ok.
 
 maybe_reset_queuing(Config, Q) ->
-    %% should not touch queuing if there are items in the queue,
-    %% otherwise we'll lose the individual message count, as replayq
-    %% stores and counts batches, not individual messages.
-    case {replayq:count(Q), replayq:is_mem_only(Q)} of
+    case {replayq:count(Q), is_replayq_durable(Config, Q)} of
         {0, _} ->
             wolff_metrics:queuing_set(Config, 0);
-        {_, true} ->
+        {_, false} ->
             wolff_metrics:queuing_set(Config, 0);
         {_, _} ->
             ok
@@ -827,6 +824,11 @@ inc_sent_success(Config, NrOfMsgs, _HasSent = true) ->
     wolff_metrics:retried_success_inc(Config, NrOfMsgs);
 inc_sent_success(Config, NrOfMsgs, _HasSent) ->
     wolff_metrics:success_inc(Config, NrOfMsgs).
+
+is_replayq_durable(#{replayq_offload_mode := true}, _Q) ->
+    false;
+is_replayq_durable(_, Q) ->
+    not replayq:is_mem_only(Q).
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
