@@ -513,7 +513,6 @@ handle_kafka_ack(#kpro_rsp{api = produce,
               false ->
                   AttemptedBefore = Attempts > 1,
                   #{ topic := Topic
-                   , sent_reqs_count := SentReqsCount
                    , partition := Partition
                    } = St,
                   inc_sent_failed(Config, 1, AttemptedBefore),
