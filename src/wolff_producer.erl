@@ -87,6 +87,7 @@
                   , replayq := replayq:q()
                   , sent_reqs => queue:queue(queue_item())
                   , sent_reqs_count => non_neg_integer()
+                  , inflight_calls => non_neg_integer()
                   , topic := topic()
                   }.
 
@@ -219,6 +220,7 @@ do_init(#{client_id := ClientId,
       produce_api_vsn => undefined,
       sent_reqs => queue:new(), % {kpro:req(), replayq:ack_ref(), [{CallId, MsgCount}]}
       sent_reqs_count => 0,
+      inflight_calls => 0,
       conn := undefined,
       client_id => ClientId
       }.
@@ -411,6 +413,7 @@ maybe_send_to_kafka_now(#{?linger_expire_timer := LTimer,
 
 send_to_kafka(#{sent_reqs := Sent,
                 sent_reqs_count := SentReqsCount,
+                inflight_calls := InflightCalls,
                 replayq := Q,
                 config := #{max_batch_bytes := BytesLimit,
                             required_acks := RequiredAcks,
@@ -431,7 +434,8 @@ send_to_kafka(#{sent_reqs := Sent,
   [_ | _] = FlatBatch, %% assert
   wolff_metrics:queuing_set(Config, replayq:count(NewQ)),
   NewSentReqsCount = SentReqsCount + 1,
-  wolff_metrics:inflight_set(Config, NewSentReqsCount),
+  NewInflightCalls = InflightCalls + length(Calls),
+  _ = wolff_metrics:inflight_set(Config, NewInflightCalls),
   Req = kpro_req_lib:produce(Vsn, Topic, Partition, FlatBatch,
                              #{ack_timeout => AckTimeout,
                                required_acks => RequiredAcks,
@@ -443,7 +447,8 @@ send_to_kafka(#{sent_reqs := Sent,
               calls => Calls,
               attempts => 1},
   St2 = St1#{sent_reqs := queue:in(NewSent, Sent),
-             sent_reqs_count := NewSentReqsCount
+             sent_reqs_count := NewSentReqsCount,
+             inflight_calls := NewInflightCalls
             },
   ok = request_async(Conn, Req),
   ok = send_stats(St2, FlatBatch),
@@ -506,6 +511,7 @@ handle_kafka_ack(#kpro_rsp{api = produce,
   BaseOffset = kpro:find(base_offset, PartitionRsp),
   case queue:peek(SentReqs) of
       {value, #{request := #kpro_req{ref = Ref},
+                calls := Calls,
                 attempts := Attempts}} ->
           case ErrorCode =:= ?no_error of
               true ->
@@ -515,7 +521,7 @@ handle_kafka_ack(#kpro_rsp{api = produce,
                   #{ topic := Topic
                    , partition := Partition
                    } = St,
-                  inc_sent_failed(Config, 1, AttemptedBefore),
+                  inc_sent_failed(Config, length(Calls), AttemptedBefore),
                   log_warn(Topic, Partition,
                            "error_in_produce_response",
                            #{error_code => ErrorCode}),
@@ -529,6 +535,7 @@ handle_kafka_ack(#kpro_rsp{api = produce,
 do_handle_kafka_ack(BaseOffset,
                     #{sent_reqs := SentReqs,
                       sent_reqs_count := SentReqsCount,
+                      inflight_calls := InflightCalls,
                       pending_acks := PendingAcks,
                       replayq := Q,
                       config := Config
@@ -537,13 +544,15 @@ do_handle_kafka_ack(BaseOffset,
                calls := Calls,
                attempts := Attempts}}, NewSentReqs} = queue:out(SentReqs),
     AttemptedBefore = Attempts > 1,
-    inc_sent_success(Config, 1, AttemptedBefore),
+    inc_sent_success(Config, length(Calls), AttemptedBefore),
     NewSentReqsCount = SentReqsCount - 1,
-    wolff_metrics:inflight_set(Config, NewSentReqsCount),
+    NewInflightCalls = InflightCalls - length(Calls),
+    wolff_metrics:inflight_set(Config, NewInflightCalls),
     ok = replayq:ack(Q, Q_AckRef),
     NewPendingAcks = evaluate_pending_ack_funs(PendingAcks, Calls, BaseOffset),
     St#{sent_reqs := NewSentReqs,
         sent_reqs_count := NewSentReqsCount,
+        inflight_calls := NewInflightCalls,
         pending_acks := NewPendingAcks
        }.
 
@@ -767,9 +776,9 @@ handle_overflow(#{replayq := Q,
   ok = replayq:ack(NewQ, QAckRef),
   {FlatBatch, Calls} = get_flat_batch(Items, [], []),
   [_ | _] = FlatBatch, %% assert
-  NumOfBatches = length(Items),
-  wolff_metrics:dropped_queue_full_inc(Config, NumOfBatches),
-  wolff_metrics:dropped_inc(Config, NumOfBatches),
+  NrOfCalls = length(Items),
+  wolff_metrics:dropped_queue_full_inc(Config, NrOfCalls),
+  wolff_metrics:dropped_inc(Config, NrOfCalls),
   wolff_metrics:queuing_set(Config, replayq:count(NewQ)),
   ok = maybe_log_discard(St, length(Calls)),
   NewPendingAcks = evaluate_pending_ack_funs(PendingAcks, Calls, ?buffer_overflow_discarded),
@@ -812,15 +821,15 @@ put_overflow_log_state(Ts, Cnt, Acc) ->
   put(?buffer_overflow_discarded, #{last_ts => Ts, last_cnt => Cnt, acc_cnt => Acc}),
   ok.
 
-inc_sent_failed(Config, NrOfFailedMsgs, _HasSent = true) ->
-    wolff_metrics:retried_failed_inc(Config, NrOfFailedMsgs);
-inc_sent_failed(Config, NrOfFailedMsgs, _HasSent) ->
-    wolff_metrics:failed_inc(Config, NrOfFailedMsgs).
+inc_sent_failed(Config, NrOfFailedCalls, _HasSent = true) ->
+    wolff_metrics:retried_failed_inc(Config, NrOfFailedCalls);
+inc_sent_failed(Config, NrOfFailedCalls, _HasSent) ->
+    wolff_metrics:failed_inc(Config, NrOfFailedCalls).
 
-inc_sent_success(Config, NrOfMsgs, _HasSent = true) ->
-    wolff_metrics:retried_success_inc(Config, NrOfMsgs);
-inc_sent_success(Config, NrOfMsgs, _HasSent) ->
-    wolff_metrics:success_inc(Config, NrOfMsgs).
+inc_sent_success(Config, NrOfCalls, _HasSent = true) ->
+    wolff_metrics:retried_success_inc(Config, NrOfCalls);
+inc_sent_success(Config, NrOfCalls, _HasSent) ->
+    wolff_metrics:success_inc(Config, NrOfCalls).
 
 is_replayq_durable(#{replayq_offload_mode := true}, _Q) ->
     false;
