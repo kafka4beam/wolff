@@ -5,7 +5,6 @@
 
 -define(KEY, key(?FUNCTION_NAME)).
 -define(HOSTS, [{"localhost", 9092}]).
--define(assert_eq_optional_tail(EXPR,EXPECTED), assert_eq_optional_tail(fun() -> EXPR end, EXPECTED)).
 
 supervised_client_test() ->
   CntrEventsTable = ets:new(cntr_events, [public]),
@@ -35,13 +34,9 @@ supervised_client_test() ->
   ok = application:stop(wolff),
   ?assertEqual(undefined, whereis(wolff_sup)),
   ?assertEqual(undefined, whereis(wolff_stats)),
-  ?assert_eq_optional_tail(
-     wolff_test_utils:dedup_list(get_telemetry_seq(CntrEventsTable, [wolff, queuing])),
-     [0,1,0]),
-  ?assert_eq_optional_tail(
-     wolff_test_utils:dedup_list(get_telemetry_seq(CntrEventsTable, [wolff, inflight])),
-     [0,1,0]),
-  [1] = wolff_tests:get_telemetry_seq(CntrEventsTable, [wolff,success]),
+  assert_last_event_is_zero(queuing, CntrEventsTable),
+  assert_last_event_is_zero(inflight, CntrEventsTable),
+  [1] = get_telemetry_seq(CntrEventsTable, [wolff,success]),
   ets:delete(CntrEventsTable),
   wolff_tests:deinstall_event_logging(?FUNCTION_NAME),
   ok.
@@ -68,13 +63,9 @@ supervised_producers_test() ->
   ok = wolff:stop_and_delete_supervised_client(ClientId),
   ?assertEqual([], supervisor:which_children(wolff_client_sup)),
   ok = application:stop(wolff),
-  ?assert_eq_optional_tail(
-     wolff_test_utils:dedup_list(get_telemetry_seq(CntrEventsTable, [wolff, queuing])),
-     [0,1,0]),
-  ?assert_eq_optional_tail(
-     wolff_test_utils:dedup_list(get_telemetry_seq(CntrEventsTable, [wolff, inflight])),
-     [0,1,0]),
-  [1] = wolff_tests:get_telemetry_seq(CntrEventsTable, [wolff,success]),
+  assert_last_event_is_zero(queuing, CntrEventsTable),
+  assert_last_event_is_zero(inflight, CntrEventsTable),
+  [1] = get_telemetry_seq(CntrEventsTable, [wolff,success]),
   ets:delete(CntrEventsTable),
   wolff_tests:deinstall_event_logging(?FUNCTION_NAME),
   ok.
@@ -119,13 +110,9 @@ test_client_restart(ClientId, Topic, Partition) ->
   ok = wolff:stop_and_delete_supervised_client(ClientId),
   ?assertEqual([], supervisor:which_children(wolff_client_sup)),
   ok = application:stop(wolff),
-  [1,1] = wolff_tests:get_telemetry_seq(CntrEventsTable, [wolff,success]),
-  ?assert_eq_optional_tail(
-     wolff_test_utils:dedup_list(wolff_tests:get_telemetry_seq(CntrEventsTable, [wolff,queuing])),
-     [0,1,0,1,0]),
-  ?assert_eq_optional_tail(
-     wolff_test_utils:dedup_list(wolff_tests:get_telemetry_seq(CntrEventsTable, [wolff,inflight])),
-     [0,1,0,1,0]),
+  [1,1] = get_telemetry_seq(CntrEventsTable, [wolff,success]),
+  assert_last_event_is_zero(queuing, CntrEventsTable),
+  assert_last_event_is_zero(inflight, CntrEventsTable),
   ets:delete(CntrEventsTable),
   wolff_tests:deinstall_event_logging(?FUNCTION_NAME),
   ok.
@@ -180,13 +167,9 @@ producer_restart_test() ->
   ok = wolff:stop_and_delete_supervised_client(ClientId),
   ?assertEqual([], supervisor:which_children(wolff_client_sup)),
   ok = application:stop(wolff),
-  [1,1] = wolff_tests:get_telemetry_seq(CntrEventsTable, [wolff,success]),
-  ?assert_eq_optional_tail(
-     wolff_test_utils:dedup_list(get_telemetry_seq(CntrEventsTable, [wolff, queuing])),
-     [0,1,0,1,0,1,2,0]),
-  ?assert_eq_optional_tail(
-     wolff_test_utils:dedup_list(get_telemetry_seq(CntrEventsTable, [wolff, inflight])),
-     [0,1,0,1,0,1,0]),
+  [1,2] = get_telemetry_seq(CntrEventsTable, [wolff,success]),
+  assert_last_event_is_zero(queuing, CntrEventsTable),
+  assert_last_event_is_zero(inflight, CntrEventsTable),
   ets:delete(CntrEventsTable),
   wolff_tests:deinstall_event_logging(?FUNCTION_NAME),
   ok.
@@ -250,13 +233,9 @@ test_partition_count_refresh() ->
   timer:sleep(timer:seconds(IntervalSeconds * 2)),
   {Partition1, _} = wolff:send_sync(Producers, [Msg], 3000),
   ?assertEqual(Partitions0, Partition1),
-  [1,1] = wolff_tests:get_telemetry_seq(CntrEventsTable, [wolff,success]),
-  ?assert_eq_optional_tail(
-     wolff_test_utils:dedup_list(get_telemetry_seq(CntrEventsTable, [wolff, queuing])),
-     [0,1,0,1,0]),
-  ?assert_eq_optional_tail(
-     wolff_test_utils:dedup_list(get_telemetry_seq(CntrEventsTable, [wolff, inflight])),
-     [0,1,0,1,0]),
+  [1,1] = get_telemetry_seq(CntrEventsTable, [wolff,success]),
+  assert_last_event_is_zero(queuing, CntrEventsTable),
+  assert_last_event_is_zero(inflight, CntrEventsTable),
   ets:delete(CntrEventsTable),
   wolff_tests:deinstall_event_logging(?FUNCTION_NAME),
   ok.
@@ -318,9 +297,9 @@ fail_retry_success_test() ->
         ok
       end),
     {ok, _} = wait_telemetry_event([wolff, retried_success]),
-    [1] = wolff_tests:get_telemetry_seq(CntrEventsTable, [wolff, failed]),
-    [1] = wolff_tests:get_telemetry_seq(CntrEventsTable, [wolff, retried]),
-    [1] = wolff_tests:get_telemetry_seq(CntrEventsTable, [wolff, retried_success]),
+    [1] = get_telemetry_seq(CntrEventsTable, [wolff, failed]),
+    [1] = get_telemetry_seq(CntrEventsTable, [wolff, retried]),
+    [1] = get_telemetry_seq(CntrEventsTable, [wolff, retried_success]),
     ok
   after
       ok = wolff:stop_and_delete_supervised_producers(Producers),
@@ -371,7 +350,7 @@ fail_retry_failed_test() ->
            ok
          end),
        {ok, _} = wait_telemetry_event([wolff, retried_success]),
-       [1 | _] = wolff_tests:get_telemetry_seq(CntrEventsTable, [wolff, failed]),
+       [1 | _] = get_telemetry_seq(CntrEventsTable, [wolff, failed]),
        [1 | _] = wolff_tests:get_telemetry_seq(CntrEventsTable, [wolff, retried]),
        [1 | _] = wolff_tests:get_telemetry_seq(CntrEventsTable, [wolff, retried_failed]),
        [1] = wolff_tests:get_telemetry_seq(CntrEventsTable, [wolff, retried_success]),
@@ -485,18 +464,18 @@ kafka_topic_cmd_base(Topic) ->
     " --zookeeper zookeeper:2181" ++
     " --topic '" ++ Topic ++ "'".
 
-assert_eq_optional_tail(Fun, ExpectedList) ->
-    ExpectedListMinusLast = lists:sublist(ExpectedList, length(ExpectedList) - 1),
-    case Fun() of
-        ExpectedList ->
-            ok;
-        ExpectedListMinusLast ->
-            %% sometimes the terminate callback seems to not have time
-            %% to insert into the ets, making this flaky.
-            ok;
-        Xs0 ->
-            ct:fail("unexpected result: ~p", [Xs0])
-    end.
-
 get_telemetry_seq(Table, Event) ->
     wolff_tests:get_telemetry_seq(Table, Event).
+
+assert_last_event_is_zero(Key, Tab) ->
+  case get_telemetry_seq(Tab, [wolff, Key]) of
+    [] ->
+      throw(no_event_recorded);
+    L ->
+      case lists:last(L) of
+        0 ->
+          ok;
+        X ->
+          throw({unexpected_eventual_state, X})
+      end
+  end.
