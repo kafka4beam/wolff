@@ -1,3 +1,5 @@
+* 1.7.6
+  - Expose wolff:check_if_topic_exists/3 for checking if a topic is created. [#45](https://github.com/kafka4beam/wolff/pull/45)
 * 1.7.4
   - Refactor the gauge metrics to handle multiple workers changing the
     same gauge. [#41](https://github.com/kafka4beam/wolff/pull/41)
