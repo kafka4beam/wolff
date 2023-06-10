@@ -35,7 +35,7 @@
          send_sync/3
         ]).
 
--export([check_connectivity/1, check_connectivity/2]).
+-export([check_connectivity/1, check_connectivity/2, check_if_topic_exists/3]).
 
 %% for test
 -export([get_producer/2]).
@@ -145,4 +145,10 @@ check_connectivity(ClientId) ->
 -spec check_connectivity([host()], wolff_client:config()) ->
         ok | {error, [{FormatedHostPort :: binary(), any()}]}.
 check_connectivity(Hosts, ConnConfig) ->
-    wolff_client:check_connectivity(Hosts, ConnConfig).
+   wolff_client:check_connectivity(Hosts, ConnConfig).
+
+%% @doc Check if the cluster is reachable and the topic is created.
+-spec check_if_topic_exists([host()], wolff_client:config(), topic()) ->
+        ok | {error, [{FormatedHostPort :: binary(), any()}]}.
+check_if_topic_exists(Hosts, ConnConfig, Topic) ->
+  wolff_client:check_if_topic_exists(Hosts, ConnConfig, Topic).

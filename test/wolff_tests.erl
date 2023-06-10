@@ -476,10 +476,16 @@ check_connectivity_test() ->
   ClientCfg = client_config(),
   {ok, Client} = start_client(ClientId, ?HOSTS, ClientCfg),
   ?assertEqual(ok, wolff:check_connectivity(ClientId)),
+  ?assertEqual(ok, wolff:check_if_topic_exists(?HOSTS, ClientCfg, <<"test-topic">>)),
+  ?assertError(function_clause, wolff:check_connectivity([], ClientCfg)),
+  ?assertEqual(
+    {error, unknown_topic_or_partition},
+    wolff:check_if_topic_exists(?HOSTS, ClientCfg, <<"unknown-topic">>)
+  ),
+  ?assertError(function_clause, wolff:check_if_topic_exists([], ClientCfg, <<"unknown-topic">>)),
   ok = stop_client(Client),
   ?assertEqual({error, no_such_client}, wolff:check_connectivity(ClientId)),
   ok = application:stop(wolff).
-
 
 client_state_upgrade_test() ->
   ClientId = <<"client-stats-test">>,

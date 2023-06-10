@@ -21,6 +21,7 @@
 -export([start_link/3, stop/1]).
 -export([get_leader_connections/2, recv_leader_connection/4, get_id/1, delete_producers_metadata/2]).
 -export([check_connectivity/1, check_connectivity/2]).
+-export([check_if_topic_exists/2, check_if_topic_exists/3]).
 
 %% gen_server callbacks
 -export([code_change/3, handle_call/3, handle_cast/2, handle_info/2, init/1, terminate/2]).
@@ -94,7 +95,7 @@ check_connectivity(Pid) ->
   safe_call(Pid, check_connectivity).
 
 -spec check_connectivity([host()], kpro:conn_config()) -> ok | {error, any()}.
-check_connectivity(Hosts, ConnConfig) ->
+check_connectivity(Hosts, ConnConfig) when Hosts =/= [] ->
     case kpro:connect_any(Hosts, ConnConfig) of
         {ok, Conn} ->
             close_connection(Conn),
@@ -102,6 +103,28 @@ check_connectivity(Hosts, ConnConfig) ->
         {error, Reasons} ->
             {error, tr_reasons(Reasons)}
     end.
+
+-spec check_if_topic_exists([host()], kpro:conn_config(), topic()) ->
+        ok | {error, unknown_topic_or_partition | [#{host := binary(), reason := term()}] | any()}.
+check_if_topic_exists(Hosts, ConnConfig, Topic) when Hosts =/= [] ->
+  case get_metadata(Hosts, ConnConfig, Topic) of
+    {ok, _} ->
+      ok;
+    {error, Errors} ->
+      {error, Errors}
+  end.
+
+-spec check_if_topic_exists(pid(), topic()) ->
+        ok | {error, unknown_topic_or_partition | [#{host := binary(), reason := term()}] | any()}.
+check_if_topic_exists(Pid, Topic) when is_pid(Pid) ->
+  {ok, Vsns} = kpro:get_api_versions(Pid),
+  {_, Vsn} = maps:get(metadata, Vsns),
+  case do_get_metadata(Vsn, Pid, Topic) of
+    {ok, _} ->
+      ok;
+    {error, Errors} ->
+      {error, Errors}
+  end.
 
 safe_call(Pid, Call) ->
   try gen_server:call(Pid, Call, infinity)
@@ -235,7 +258,7 @@ do_ensure_leader_connections(#{conn_config := ConnConfig,
                                seed_hosts := SeedHosts,
                                metadata_ts := MetadataTs
                               } = St0, Topic) ->
-  case get_metadata(SeedHosts, ConnConfig, Topic, []) of
+  case get_metadata(SeedHosts, ConnConfig, Topic) of
     {ok, {Brokers, PartitionMetaList}} ->
       St = lists:foldl(fun(PartitionMeta, StIn) ->
                            ensure_leader_connection(StIn, Brokers, Topic, PartitionMeta)
@@ -352,6 +375,11 @@ split_config(Config) ->
   Pred = fun({K, _V}) -> lists:member(K, ConnCfgKeys) end,
   {ConnCfg, MyCfg} = lists:partition(Pred, maps:to_list(Config)),
   {maps:from_list(ConnCfg), maps:from_list(MyCfg)}.
+
+get_metadata(Hosts, _ConnectFun, _Topic) when Hosts =:= [] ->
+  {error, no_hosts};
+get_metadata(Hosts, ConnectFun, Topic) ->
+  get_metadata(Hosts, ConnectFun, Topic, []).
 
 get_metadata([], _ConnectFun, _Topic, Errors) ->
   %% failed to connect to ALL seed hosts, crash instead of return {error, Reason}
