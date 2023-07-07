@@ -154,7 +154,7 @@ test_connection_restart() ->
   Msg = #{key => ?KEY, value => <<"value">>},
   _ = wolff:send(Producers, [Msg], AckFun),
   Producer = wolff:get_producer(Producers, 0),
-  #{conn := Conn} = sys:get_state(Producer),
+  #{conn := Conn} = get_proc_state(Producer),
   erlang:exit(Conn, kill),
   receive
     {ack, Ref, Partition, BaseOffset} ->
@@ -164,7 +164,7 @@ test_connection_restart() ->
       erlang:error({unexpected, Msg})
   after
     8000 ->
-      io:format(user, "~p\n", [sys:get_state(Producer)]),
+      io:format(user, "~p\n", [get_proc_state(Producer)]),
       erlang:error(timeout)
   end,
   ok = wolff:stop_producers(Producers),
@@ -437,10 +437,10 @@ test_leader_restart() ->
 %% 3. trigger some activity to the wolff_client pid
 %% 4. check if the state is upgraded to new version
 verify_state_upgrade(Client, F) ->
-  sys:replace_state(Client, fun(St) -> to_old_client_state(St) end),
-  ?assertMatch(#{connect := ConnFun} when is_function(ConnFun), sys:get_state(Client)),
+  replace_proc_state(Client, fun(St) -> to_old_client_state(St) end),
+  ?assertMatch(#{connect := ConnFun} when is_function(ConnFun), get_proc_state(Client)),
   _ = F(), %% trigger a handle_call, handle_info or handle_cast which in turn triggers state upgrade
-  ?assertMatch(#{conn_config := _}, sys:get_state(Client)),
+  ?assertMatch(#{conn_config := _}, get_proc_state(Client)),
   ok.
 
 to_old_client_state(St0) ->
@@ -510,3 +510,16 @@ start_kafka_2() ->
   Cmd = "docker start wolff-kafka-2",
   os:cmd(Cmd),
   ok.
+
+get_proc_state(Pid) ->
+  case sys:get_state(Pid) of
+    #{batch_callback_state := St} -> St;
+    St -> St
+  end.
+
+replace_proc_state(Pid, Fun) ->
+  sys:replace_state(Pid,
+    fun (#{batch_callback_state := St} = State) ->
+          State#{batch_callback_state => Fun(St)};
+        (St) -> Fun(St)
+    end).
