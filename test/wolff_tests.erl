@@ -33,17 +33,65 @@ ack_cb(Partition, Offset, Self, Ref) ->
   Self ! {ack, Ref, Partition, Offset},
   ok.
 
-send_test() ->
+setup_client_producers(ProducerCfg) ->
   ClientCfg = client_config(),
+  setup_client_producers(ClientCfg, ProducerCfg).
+
+setup_client_producers(ClientCfg, ProducerCfg) ->
   {ok, Client} = start_client(<<"client-1">>, ?HOSTS, ClientCfg),
-  ProducerCfg = #{partitioner => fun(_, _) -> 0 end},
   {ok, Producers} = wolff:start_producers(Client, <<"test-topic">>, ProducerCfg),
+  {Client, Producers}.
+
+cleanup_client_producers({Client, Producers}) ->
+  ok = wolff:stop_producers(Producers),
+  ok = stop_client(Client).
+
+send_test_() ->
+  ProducerCfg = #{partitioner => fun(_, _) -> 0 end},
+  [{"send_test - default config",
+      {setup,
+        fun() -> setup_client_producers(ProducerCfg) end,
+        fun cleanup_client_producers/1,
+        fun test_send/1}},
+   {"send_test - batcher config",
+      {setup,
+        fun() -> setup_client_producers(with_batcher_config(ProducerCfg)) end,
+        fun cleanup_client_producers/1,
+        fun test_send/1}},
+   %% Test with single message which has the maximum payload below limit
+   %% it should be accepted by Kafka, otherwise message_too_large
+   {"send_one_msg_max_batch_test - default config",
+      {setup,
+        fun() -> setup_client_producers(ProducerCfg) end,
+        fun cleanup_client_producers/1,
+        fun test_send_one_msg_max_batch/1}},
+   {"send_one_msg_max_batch_test - batcher config",
+      {setup,
+        fun() -> setup_client_producers(with_batcher_config(ProducerCfg)) end,
+        fun cleanup_client_producers/1,
+        fun test_send_one_msg_max_batch/1}},
+    %% Test with a batch with only one byte values, so the batch size could reach
+    %% maximum. Kafka should accept this batch otherwise the produce request will
+    %% fail with message_too_large error.
+    {"send_smallest_msg_max_batch_test - default config",
+      {setup,
+        fun() -> setup_client_producers(ProducerCfg) end,
+        fun cleanup_client_producers/1,
+        fun send_smallest_msg_max_batch/1}},
+    {"send_smallest_msg_max_batch_test - batcher config",
+      {setup,
+        fun() -> setup_client_producers(with_batcher_config(ProducerCfg)) end,
+        fun cleanup_client_producers/1,
+        fun send_smallest_msg_max_batch/1}}
+  ].
+
+test_send({_Client, Producers}) ->
   Msg = #{key => ?KEY, value => <<"value">>},
   Ref = make_ref(),
   Self = self(),
   AckFun = {fun ?MODULE:ack_cb/4, [Self, Ref]},
   _ = wolff:send(Producers, [Msg], AckFun),
-  receive
+  Ret = receive
     {ack, Ref, Partition, BaseOffset} ->
       io:format(user, "\nmessage produced to partition ~p at offset ~p\n",
                 [Partition, BaseOffset]);
@@ -53,16 +101,9 @@ send_test() ->
     5000 ->
       erlang:error(timeout)
   end,
-  ok = wolff:stop_producers(Producers),
-  ok = stop_client(Client).
+  ?_assertEqual(ok, Ret).
 
-%% Test with single message which has the maximum payload below limit
-%% it should be accepted by Kafka, otherwise message_too_large
-send_one_msg_max_batch_test() ->
-  ClientCfg = client_config(),
-  {ok, Client} = start_client(<<"client-1">>, ?HOSTS, ClientCfg),
-  ProducerCfg = #{partitioner => fun(_, _) -> 0 end},
-  {ok, Producers} = wolff:start_producers(Client, <<"test-topic">>, ProducerCfg),
+test_send_one_msg_max_batch({_Client, Producers}) ->
   EmptyBatchBytes = batch_bytes([#{key => <<>>, value => <<>>}]),
   VarintDelta = wolff_producer:varint_bytes(?MAX_BATCH_BYTES) -
                 wolff_producer:varint_bytes(0),
@@ -77,7 +118,7 @@ send_one_msg_max_batch_test() ->
   Self = self(),
   AckFun = fun(Partition, Offset) -> Self ! {ack, Ref, Partition, Offset}, ok end,
   _ = wolff:send(Producers, [Msg], AckFun),
-  receive
+  Ret = receive
     {ack, Ref, Partition, BaseOffset} ->
       io:format(user, "\nmessage produced to partition ~p at offset ~p\n",
                 [Partition, BaseOffset]);
@@ -87,17 +128,9 @@ send_one_msg_max_batch_test() ->
     5000 ->
       erlang:error(timeout)
   end,
-  ok = wolff:stop_producers(Producers),
-  ok = stop_client(Client).
+  ?_assertEqual(ok, Ret).
 
-%% Test with a batch with only one byte values, so the batch size could reach
-%% maximum. Kafka should accept this batch otherwise the produce request will
-%% fail with message_too_large error.
-send_smallest_msg_max_batch_test() ->
-  ClientCfg = client_config(),
-  {ok, Client} = start_client(<<"client-1">>, ?HOSTS, ClientCfg),
-  ProducerCfg = #{partitioner => fun(_, _) -> 0 end},
-  {ok, Producers} = wolff:start_producers(Client, <<"test-topic">>, ProducerCfg),
+send_smallest_msg_max_batch({_Client, Producers}) ->
   Msg = #{key => <<>>, value => <<"0">>},
   OneMsgBytes = batch_bytes([Msg]),
   Count = ?WOLFF_KAFKA_DEFAULT_MAX_MESSAGE_BYTES div OneMsgBytes,
@@ -109,7 +142,7 @@ send_smallest_msg_max_batch_test() ->
   Self = self(),
   AckFun = fun(Partition, Offset) -> Self ! {ack, Ref, Partition, Offset}, ok end,
   _ = wolff:send(Producers, Batch, AckFun),
-  receive
+  Ret = receive
     {ack, Ref, Partition, BaseOffset} ->
       io:format(user, "\nmessage produced to partition ~p at offset ~p\n",
                 [Partition, BaseOffset]);
@@ -119,44 +152,64 @@ send_smallest_msg_max_batch_test() ->
     5000 ->
       erlang:error(timeout)
   end,
-  ok = wolff:stop_producers(Producers),
-  ok = stop_client(Client).
+  ?_assertEqual(ok, Ret).
 
 send_sync_test() ->
-  ClientCfg = client_config(),
-  {ok, Client} = start_client(<<"client-1">>, ?HOSTS, ClientCfg),
   ProducerCfg = #{partitioner => first_key_dispatch},
-  {ok, Producers} = wolff:start_producers(Client, <<"test-topic">>, ProducerCfg),
+  [{"send_sync_test - default config",
+      {setup,
+        fun() -> setup_client_producers(ProducerCfg) end,
+        fun cleanup_client_producers/1,
+        fun test_send_sync/1}},
+   {"send_sync_test - batcher config",
+      {setup,
+        fun() -> setup_client_producers(with_batcher_config(ProducerCfg)) end,
+        fun cleanup_client_producers/1,
+        fun test_send_sync/1}}
+  ].
+
+test_send_sync({_Client, Producers}) ->
   Msg = #{key => ?KEY, value => <<"value">>},
   {Partition, BaseOffset} = wolff:send_sync(Producers, [Msg], 3000),
   io:format(user, "\nmessage produced to partition ~p at offset ~p\n",
             [Partition, BaseOffset]),
-  ok = wolff:stop_producers(Producers),
-  ok = stop_client(Client).
+  ?_assert(is_integer(Partition)).
 
 connection_restart_test_() ->
- {timeout, 10, fun() -> test_connection_restart() end}.
-
-test_connection_restart() ->
   ClientCfg0 = client_config(),
   ClientCfg = ClientCfg0#{min_metadata_refresh_interval => 0},
-  {ok, Client} = start_client(<<"client-1">>, ?HOSTS, ClientCfg),
   ProducerCfg0 = producer_config(),
   %% allow message linger, so we have time to kill the connection
   ProducerCfg = ProducerCfg0#{max_linger_ms => 200,
                               partitioner => roundrobin,
                               reconnect_delay_ms => 0
                              },
-  {ok, Producers} = wolff:start_producers(Client, <<"test-topic">>, ProducerCfg),
+  [{"test_connection_restart - default config",
+      {setup,
+        fun() -> setup_client_producers(ClientCfg, ProducerCfg) end,
+        fun cleanup_client_producers/1,
+        fun test_connection_restart/1
+      }},
+   {"test_connection_restart - batcher config",
+      {setup,
+        fun() -> setup_client_producers(ClientCfg, with_batcher_config(ProducerCfg)) end,
+        fun cleanup_client_producers/1,
+        fun test_connection_restart/1}}
+  ].
+
+test_connection_restart({_Client, Producers}) ->
+  {timeout, 10, fun() -> do_test_connection_restart(Producers) end}.
+
+do_test_connection_restart(Producers) ->
   Ref = make_ref(),
   Self = self(),
   AckFun = fun(Partition, Offset) -> Self ! {ack, Ref, Partition, Offset}, ok end,
   Msg = #{key => ?KEY, value => <<"value">>},
   _ = wolff:send(Producers, [Msg], AckFun),
   Producer = wolff:get_producer(Producers, 0),
-  #{conn := Conn} = get_proc_state(Producer),
+  Conn = wait_for_connection(Producer, 2000),
   erlang:exit(Conn, kill),
-  receive
+  Ret = receive
     {ack, Ref, Partition, BaseOffset} ->
       io:format(user, "\nmessage produced to partition ~p at offset ~p\n",
                 [Partition, BaseOffset]);
@@ -167,8 +220,7 @@ test_connection_restart() ->
       io:format(user, "~p\n", [get_proc_state(Producer)]),
       erlang:error(timeout)
   end,
-  ok = wolff:stop_producers(Producers),
-  ok = stop_client(Client).
+  ?_assertEqual(ok, Ret).
 
 zero_ack_test() ->
   ClientCfg = client_config(),
@@ -431,6 +483,17 @@ test_leader_restart() ->
 
 %% helpers
 
+wait_for_connection(Producer, Time) when Time > 0 ->
+  case get_proc_state(Producer) of
+    #{conn := Conn} when is_pid(Conn) ->
+      Conn;
+    _ ->
+      timer:sleep(50),
+      wait_for_connection(Producer, Time - 50)
+  end;
+wait_for_connection(_Producer, _Time) ->
+  erlang:error({timeout, "wait for connection"}).
+
 %% verify wolff_client state upgrade.
 %% 1. replace the state with old version
 %% 2. assert the replace worked
@@ -451,6 +514,12 @@ client_config() -> #{}.
 
 producer_config() ->
   #{replayq_dir => "test-data"}.
+
+with_batcher_config(ProducerCfg) ->
+  ProducerCfg#{
+    max_batch_count => 1000,
+    max_batch_interval => 500
+  }.
 
 key(Name) ->
   iolist_to_binary(io_lib:format("~p/~p", [Name, calendar:local_time()])).
