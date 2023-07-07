@@ -25,6 +25,9 @@
 %% gen_server callbacks
 -export([code_change/3, handle_call/3, handle_cast/2, handle_info/2, init/1, terminate/2]).
 
+%% msg_batcher callbacks
+-export([handle_batch/2]).
+
 %% replayq callbacks
 -export([queue_item_sizer/1, queue_item_marshaller/1]).
 
@@ -93,14 +96,24 @@
 -spec start_link(wolff:client_id(), topic(), partition(), pid() | ?conn_down(any()), config()) ->
   {ok, pid()} | {error, any()}.
 start_link(ClientId, Topic, Partition, MaybeConnPid, Config) ->
+  ConfigWithDef = use_defaults(Config),
   St = #{client_id => ClientId,
          topic => Topic,
          partition => Partition,
          conn => MaybeConnPid,
-         config => use_defaults(Config),
+         config => ConfigWithDef,
          ?linger_expire_timer => false
         },
-  gen_server:start_link(?MODULE, St, []).
+  case maps:get(max_batch_count, ConfigWithDef) of
+    MaxBatchCount when MaxBatchCount > 1 ->
+      msg_batcher:start_link(?MODULE, St, [], #{
+          batch_size => MaxBatchCount,
+          batch_time => maps:get(max_batch_interval, ConfigWithDef),
+          tab_name => producer_name(ClientId, Partition)
+      });
+    _ ->
+      gen_server:start_link(?MODULE, St, [])
+  end.
 
 stop(Pid) ->
   gen_server:call(Pid, stop, infinity).
@@ -118,13 +131,18 @@ send(Pid, [_ | _] = Batch0, AckFun) ->
   Caller = self(),
   Mref = erlang:monitor(process, Pid),
   Batch = ensure_ts(Batch0),
-  erlang:send(Pid, ?SEND_REQ({Caller, Mref}, Batch, AckFun)),
-  receive
-    {Mref, ?queued} ->
-      erlang:demonitor(Mref, [flush]),
-      ok;
-    {'DOWN', Mref, _, _, Reason} ->
-      erlang:error({producer_down, Reason})
+  case msg_batcher_object:get(Pid) of
+    not_found ->
+      erlang:send(Pid, ?SEND_REQ({Caller, Mref}, Batch, AckFun)),
+      receive
+        {Mref, ?queued} ->
+          erlang:demonitor(Mref, [flush]),
+          ok;
+        {'DOWN', Mref, _, _, Reason} ->
+          erlang:error({producer_down, Reason})
+      end;
+    _ ->
+      msg_batcher:enqueue(Pid, ?SEND_REQ(?no_queued_reply, Batch, AckFun))
   end.
 
 %% @doc Send a batch synchronously.
@@ -139,7 +157,13 @@ send_sync(Pid, Batch0, Timeout) ->
                ok
            end,
   Batch = ensure_ts(Batch0),
-  erlang:send(Pid, ?SEND_REQ(?no_queued_reply, Batch, AckFun)),
+  Request = ?SEND_REQ(?no_queued_reply, Batch, AckFun),
+  case msg_batcher_object:get(Pid) of
+    not_found ->
+      erlang:send(Pid, Request);
+    _ ->
+      msg_batcher:enqueue(Pid, Request)
+  end,
   receive
     {Mref, Partition, BaseOffset} ->
       erlang:demonitor(Mref, [flush]),
@@ -271,6 +295,12 @@ handle_info(_Info, St) ->
 handle_cast(_Cast, St) ->
   {noreply, St}.
 
+handle_batch(BatchReqs, St0) ->
+  {ok, lists:foldl(fun(Req, St1) ->
+          {noreply, St2} = handle_info(Req, St1),
+          St2
+        end, St0, BatchReqs)}.
+
 code_change(_OldVsn, St, _Extra) ->
   {ok, St}.
 
@@ -278,6 +308,9 @@ terminate(_, #{replayq := Q}) ->
   ok = replayq:close(Q);
 terminate(_, _) ->
   ok.
+
+producer_name(ClientId, Partition) ->
+  list_to_atom(lists:flatten(io_lib:format("~s-~p", [ClientId, Partition]))).
 
 ensure_ts(Batch) ->
   lists:map(fun(#{ts := _} = Msg) -> Msg;
@@ -290,6 +323,8 @@ make_call_id(Base) ->
 use_defaults(Config) ->
   use_defaults(Config, [{required_acks, all_isr},
                         {ack_timeout, 10000},
+                        {max_batch_count, 500},
+                        {max_batch_interval, 50},
                         {max_batch_bytes, ?WOLFF_KAFKA_DEFAULT_MAX_MESSAGE_BYTES},
                         {max_linger_ms, 0},
                         {max_send_ahead, 0},

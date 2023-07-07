@@ -6,7 +6,8 @@
    [kernel,
     stdlib,
     kafka_protocol,
-    replayq
+    replayq,
+    msg_batcher
    ]},
   {env,[]},
   {mod, {wolff_app, start}},
