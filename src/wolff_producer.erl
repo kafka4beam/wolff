@@ -323,7 +323,7 @@ make_call_id(Base) ->
 use_defaults(Config) ->
   use_defaults(Config, [{required_acks, all_isr},
                         {ack_timeout, 10000},
-                        {max_batch_count, 500},
+                        {max_batch_count, 1},
                         {max_batch_interval, 50},
                         {max_batch_bytes, ?WOLFF_KAFKA_DEFAULT_MAX_MESSAGE_BYTES},
                         {max_linger_ms, 0},
