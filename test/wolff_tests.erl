@@ -236,9 +236,7 @@ zero_ack_test() ->
   ok = wolff:stop_producers(Producers),
   ok = stop_client(Client).
 
-replayq_overflow_test() ->
-  ClientCfg = client_config(),
-  {ok, Client} = start_client(<<"client-1">>, ?HOSTS, ClientCfg),
+replayq_overflow_test_() ->
   Msg = #{key => <<>>, value => <<"12345">>},
   Batch = [Msg, Msg],
   BatchSize = wolff_producer:batch_bytes(Batch),
@@ -247,36 +245,54 @@ replayq_overflow_test() ->
                   required_acks => all_isr,
                   max_linger_ms => 1000 %% do not send to kafka immediately
                  },
-  {ok, Producers} = wolff:start_producers(Client, <<"test-topic">>, ProducerCfg),
+  [{"test_replayq_overflow - default config",
+      {setup,
+        fun() ->
+          {Client, Producers} = setup_client_producers(ProducerCfg),
+          {Client, Producers, Batch}
+        end,
+        fun({Client, Producers, _}) -> cleanup_client_producers({Client, Producers}) end,
+        fun test_replayq_overflow/1
+      }},
+   {"test_replayq_overflow - batcher config",
+      {setup,
+        fun() ->
+          {Client, Producers} = setup_client_producers(with_batcher_config(ProducerCfg)),
+          {Client, Producers, Batch}
+        end,
+        fun({Client, Producers, _}) -> cleanup_client_producers({Client, Producers}) end,
+        fun test_replayq_overflow/1
+      }}
+  ].
+
+test_replayq_overflow({_Client, Producers, Batch}) ->
   TesterPid = self(),
   AckFun1 = fun(_Partition, BaseOffset) -> TesterPid ! {ack_1, BaseOffset}, ok end,
   AckFun2 = fun(_Partition, BaseOffset) -> TesterPid ! {ack_2, BaseOffset}, ok end,
   SendF = fun(AckFun) -> wolff:send(Producers, Batch, AckFun) end,
+  erlang:display([{AckFun1, AckFun2}]),
   %% send two batches to overflow one
   spawn(fun() -> SendF(AckFun1) end),
-  timer:sleep(1), %% ensure order
+  timer:sleep(50), %% ensure order
   spawn(fun() -> SendF(AckFun2) end),
-  try
-    %% pushed out of replayq due to overflow
-    receive
-      {ack_1, buffer_overflow_discarded} -> ok;
-      {ack_1, Other} -> error({"unexpected_ack", Other})
-    after
-        2000 ->
-            error(timeout)
-    end,
-    %% the second batch should eventually get the ack
-    receive
-      {ack_2, buffer_overflow_discarded} -> error("unexpected_discard");
-      {ack_2, BaseOffset} -> ?assert(BaseOffset >= 0)
-    after
-        2000 ->
-            error(timeout)
-    end
+
+  %% pushed out of replayq due to overflow
+  receive
+    {ack_1, buffer_overflow_discarded} -> ok;
+    {ack_1, Other} -> error({"unexpected_ack", Other})
   after
-    ok = wolff:stop_producers(Producers),
-    ok = stop_client(Client)
-  end.
+      2000 ->
+          error(timeout)
+  end,
+  %% the second batch should eventually get the ack
+  Ret = receive
+    {ack_2, buffer_overflow_discarded} -> error("unexpected_discard");
+    {ack_2, BaseOffset} -> ?assert(BaseOffset >= 0)
+  after
+      2000 ->
+          error(timeout)
+  end,
+  ?_assertEqual(ok, Ret).
 
 replayq_highmem_overflow_test() ->
   load_ctl:put_config(#{?MEM_MON_F1 => 0.0}),

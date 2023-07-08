@@ -295,11 +295,16 @@ handle_info(_Info, St) ->
 handle_cast(_Cast, St) ->
   {noreply, St}.
 
-handle_batch(BatchReqs, St0) ->
-  {ok, lists:foldl(fun(Req, St1) ->
-          {noreply, St2} = handle_info(Req, St1),
-          St2
-        end, St0, BatchReqs)}.
+handle_batch(BatchCalls, #{client_id := ClientId,
+                          topic := Topic,
+                          partition := Partition,
+                          config := #{max_batch_bytes := Limit}
+                        } = St0) ->
+  {ok, lists:foldl(fun({Calls, Cnt, Oct}, St1) ->
+      ok = wolff_stats:recv(ClientId, Topic, Partition, #{cnt => Cnt, oct => Oct}),
+      St2 = enqueue_calls(Calls, St1),
+      maybe_send_to_kafka(St2)
+    end, St0, aggregate_send_calls(BatchCalls, Limit))}.
 
 code_change(_OldVsn, St, _Extra) ->
   {ok, St}.
@@ -308,6 +313,23 @@ terminate(_, #{replayq := Q}) ->
   ok = replayq:close(Q);
 terminate(_, _) ->
   ok.
+
+aggregate_send_calls(BatchCalls, Limit) ->
+  aggregate_send_calls(BatchCalls, Limit, {[], 0, 0}, []).
+
+aggregate_send_calls([], _, {_, _, _}, Res) ->
+  lists:reverse(Res);
+aggregate_send_calls([?SEND_REQ(_, Batch, _) = Call | Calls], Limit, {CallsAcc, Cnt, Size}, Res) ->
+  case Size + batch_bytes(Batch) of
+    Size1 when Size1 > Limit, Size == 0 ->
+      Res1 = [{[Call], Cnt + 1, Size1} | Res],
+      aggregate_send_calls(Calls, Limit, {[], 0, 0}, Res1);
+    Size1 when Size1 > Limit ->
+      Res1 = [{lists:reverse(CallsAcc), Cnt, Size} | Res],
+      aggregate_send_calls([Call | Calls], Limit, {[], 0, 0}, Res1);
+    Size1 ->
+      aggregate_send_calls(Calls, Limit, {[Call | CallsAcc], Cnt + 1, Size1}, Res)
+  end.
 
 producer_name(ClientId, Partition) ->
   list_to_atom(lists:flatten(io_lib:format("~s-~p", [ClientId, Partition]))).
