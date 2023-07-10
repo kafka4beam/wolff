@@ -507,7 +507,7 @@ handle_kafka_ack(#kpro_rsp{api = produce,
       do_handle_kafka_ack(Ref, BaseOffset, St);
     false ->
       #{topic := Topic, partition := Partition} = St,
-      log_warn(Topic, Partition, "~s-~p: Produce response error-code = ~0p", [ErrorCode]),
+      log_warn(Topic, Partition, "Produce response error-code = ~0p", [ErrorCode]),
       erlang:throw(ErrorCode)
   end.
 
