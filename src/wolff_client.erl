@@ -427,6 +427,7 @@ tr_reason({{Host, Port}, Reason}) ->
     {bin([bin(Host), ":", bin(Port)]), do_tr_reason(Reason)}.
 
 do_tr_reason({timeout, _Stack}) -> connection_timed_out;
+do_tr_reason({{_KproReq, timeout}, _Stack}) -> connection_timed_out;
 do_tr_reason({enetunreach, _Stack}) -> unreachable_host;
 do_tr_reason({econnrefused, _Stack}) -> connection_refused;
 do_tr_reason({nxdomain, _Stack}) -> unresolvable_hostname;

@@ -170,7 +170,7 @@ stop_with_name_test() ->
   ok.
 
 partition_count_refresh_test_() ->
-  {timeout, 30, %% it takes time to alter topic via cli in docker container
+  {timeout, 120, %% it takes time to alter topic via cli in docker container
    fun test_partition_count_refresh/0}.
 
 test_partition_count_refresh() ->

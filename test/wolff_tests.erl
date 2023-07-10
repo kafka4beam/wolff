@@ -461,7 +461,7 @@ fail_to_connect_all_test() ->
   ok = application:stop(wolff).
 
 leader_restart_test_() ->
-  {timeout, 60,
+  {timeout, 120, %% need a large timeout as running this on PC would take much longer than on CI
    fun() -> test_leader_restart() end}.
 
 test_leader_restart() ->
@@ -472,6 +472,7 @@ test_leader_restart() ->
   %% replication factor has to be 1 to trigger leader_not_available error code
   ReplicationFactor = 1,
   ok = create_topic(Topic, Partitions, ReplicationFactor),
+  timer:sleep(1000), %% sometimes it takes a while for topic to be really ready
   try
     _ = application:stop(wolff), %% ensure stopped
     {ok, _} = application:ensure_all_started(wolff),
@@ -491,7 +492,8 @@ test_leader_restart() ->
     ?assert(length(LeadersA0) =:= length(LeadersA1)),
     ?assert(length(LeadersB0) =:= length(LeadersB1)),
     ok = wolff_client:stop(ClientA),
-    ok = wolff_client:stop(ClientB)
+    ok = wolff_client:stop(ClientB),
+    timer:sleep(10000) %% wait for the kafka broker to recover, avoid other tests to fail
   after
     ok = delete_topic(Topic)
   end,
