@@ -129,10 +129,10 @@ stop(Pid) ->
 -spec send(pid(), [wolff:msg()], wolff:ack_fun()) -> ok.
 send(Pid, [_ | _] = Batch0, AckFun) ->
   Caller = self(),
-  Mref = erlang:monitor(process, Pid),
   Batch = ensure_ts(Batch0),
   case msg_batcher_object:get(Pid) of
     not_found ->
+      Mref = erlang:monitor(process, Pid),
       erlang:send(Pid, ?SEND_REQ({Caller, Mref}, Batch, AckFun)),
       receive
         {Mref, ?queued} ->
@@ -142,7 +142,11 @@ send(Pid, [_ | _] = Batch0, AckFun) ->
           erlang:error({producer_down, Reason})
       end;
     _ ->
-      msg_batcher:enqueue(Pid, ?SEND_REQ(?no_queued_reply, Batch, AckFun))
+      case msg_batcher:enqueue(Pid, ?SEND_REQ(?no_queued_reply, Batch, AckFun)) of
+        ok -> ok;
+        {error, batcher_not_found} ->
+          erlang:throw(producer_down)
+      end
   end.
 
 %% @doc Send a batch synchronously.
@@ -150,30 +154,42 @@ send(Pid, [_ | _] = Batch0, AckFun) ->
 -spec send_sync(pid(), [wolff:msg()], timeout()) -> {partition(), offset_reply()}.
 send_sync(Pid, Batch0, Timeout) ->
   Caller = self(),
-  Mref = erlang:monitor(process, Pid),
+  ReqRef = erlang:make_ref(),
   %% synced local usage, safe to use anonymous fun
   AckFun = fun(Partition, BaseOffset) ->
-               _ = erlang:send(Caller, {Mref, Partition, BaseOffset}),
+               _ = erlang:send(Caller, {ReqRef, Partition, BaseOffset}),
                ok
            end,
   Batch = ensure_ts(Batch0),
   Request = ?SEND_REQ(?no_queued_reply, Batch, AckFun),
   case msg_batcher_object:get(Pid) of
     not_found ->
-      erlang:send(Pid, Request);
+      Mref = erlang:monitor(process, Pid),
+      erlang:send(Pid, Request),
+      receive
+        {ReqRef, Partition, BaseOffset} ->
+          erlang:demonitor(Mref, [flush]),
+          {Partition, BaseOffset};
+        {'DOWN', Mref, _, _, Reason} ->
+          erlang:error({producer_down, Reason})
+      after
+        Timeout ->
+          erlang:demonitor(Mref, [flush]),
+          erlang:error(timeout)
+      end;
     _ ->
-      msg_batcher:enqueue(Pid, Request)
-  end,
-  receive
-    {Mref, Partition, BaseOffset} ->
-      erlang:demonitor(Mref, [flush]),
-      {Partition, BaseOffset};
-    {'DOWN', Mref, _, _, Reason} ->
-      erlang:error({producer_down, Reason})
-  after
-    Timeout ->
-      erlang:demonitor(Mref, [flush]),
-      erlang:error(timeout)
+      case msg_batcher:enqueue(Pid, Request) of
+        ok ->
+          receive
+            {ReqRef, Partition, BaseOffset} ->
+              {Partition, BaseOffset}
+          after
+            Timeout ->
+              erlang:error(timeout)
+          end;
+        {error, batcher_not_found} ->
+          erlang:throw(producer_down)
+      end
   end.
 
 init(St) ->
