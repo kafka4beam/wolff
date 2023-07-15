@@ -144,8 +144,8 @@ send(Pid, [_ | _] = Batch0, AckFun) ->
     _ ->
       case msg_batcher:enqueue(Pid, ?SEND_REQ(?no_queued_reply, Batch, AckFun)) of
         ok -> ok;
-        {error, batcher_not_found} ->
-          erlang:throw(producer_down)
+        {error, Reason} ->
+          erlang:throw({produce_error, Reason})
       end
   end.
 
@@ -187,8 +187,8 @@ send_sync(Pid, Batch0, Timeout) ->
             Timeout ->
               erlang:error(timeout)
           end;
-        {error, batcher_not_found} ->
-          erlang:throw(producer_down)
+        {error, Reason} ->
+          erlang:throw({produce_error, Reason})
       end
   end.
 
