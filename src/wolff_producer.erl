@@ -100,7 +100,9 @@ start_link(ClientId, Topic, Partition, MaybeConnPid, Config) ->
          config => use_defaults(Config),
          ?linger_expire_timer => false
         },
-  gen_server:start_link(?MODULE, St, []).
+  %% the garbage collection can be expensive if using the default 'on_heap' option.
+  SpawnOpts = [{spawn_opt, [{message_queue_data, off_heap}]}],
+  gen_server:start_link(?MODULE, St, SpawnOpts).
 
 stop(Pid) ->
   gen_server:call(Pid, stop, infinity).
