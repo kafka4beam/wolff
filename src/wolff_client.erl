@@ -105,7 +105,7 @@ check_connectivity(Hosts, ConnConfig) ->
 
 safe_call(Pid, Call) ->
   try gen_server:call(Pid, Call, infinity)
-  catch error : Reason -> {error, Reason}
+  catch exit : Reason -> {error, Reason}
   end.
 
 %% request client to send Pid the leader connection.

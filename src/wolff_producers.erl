@@ -213,7 +213,8 @@ handle_info(?refresh_partition_count, #{refresh_tref := Tref, config := Config} 
     St = refresh_partition_count(St0),
     {noreply, St#{refresh_tref := start_partition_refresh_timer(Config)}};
 handle_info(?rediscover_client, #{client_id := ClientId,
-                                  client_pid := false
+                                  client_pid := false,
+                                  topic := Topic
                                  } = St0) ->
   St1 = St0#{?rediscover_client_tref => false},
   case wolff_client_sup:find_client(ClientId) of
@@ -224,16 +225,17 @@ handle_info(?rediscover_client, #{client_id := ClientId,
       St = maybe_restart_producers(St3),
       {noreply, St};
     {error, Reason} ->
-      log_error("Failed to discover client, reason = ~p", [Reason]),
+      log_error("Failed to discover client ~s for topic ~s, reason: ~p", [ClientId, Topic, Reason]),
       {noreply, ensure_rediscover_client_timer(St1)}
   end;
 handle_info(?init_producers, St) ->
   %% this is a retry of last failure when initializing producer procs
   {noreply, maybe_init_producers(St)};
 handle_info({'DOWN', _, process, Pid, Reason}, #{client_id := ClientId,
-                                                 client_pid := Pid
+                                                 client_pid := Pid,
+                                                 topic := Topic
                                                 } = St) ->
-  log_error("Client ~p (pid = ~p) down, reason: ~p", [ClientId, Pid, Reason]),
+  log_error("Client ~p for topic ~s down, pid: ~p, reason: ~p", [ClientId, Topic, Pid, Reason]),
   %% client down, try to discover it after a delay
   %% producers should all monitor client pid,
   %% expect their 'EXIT' signals soon
