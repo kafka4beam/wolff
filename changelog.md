@@ -1,3 +1,7 @@
+* 1.5.11
+  - Fixed a try catch pattern in `gen_server` call towards client process, this should prevent `wolff_producers` from crash if `wolff_client` is killed during initialization.
+* 1.5.10
+  - Enhance: use `off_heap` spawn option in producer processes for better gc performance.
 * 1.5.9
   - Fix: when picking a producer PID, if it was dead, it could lead to an error being raised. [#38](https://github.com/kafka4beam/wolff/pull/38)
 * 1.5.8
