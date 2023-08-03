@@ -128,7 +128,7 @@ check_if_topic_exists(Pid, Topic) when is_pid(Pid) ->
 
 safe_call(Pid, Call) ->
   try gen_server:call(Pid, Call, infinity)
-  catch error : Reason -> {error, Reason}
+  catch exit : Reason -> {error, Reason}
   end.
 
 %% request client to send Pid the leader connection.

@@ -215,7 +215,8 @@ handle_info(?refresh_partition_count, #{refresh_tref := Tref, config := Config} 
     St = refresh_partition_count(St0),
     {noreply, St#{refresh_tref := start_partition_refresh_timer(Config)}};
 handle_info(?rediscover_client, #{client_id := ClientId,
-                                  client_pid := false
+                                  client_pid := false,
+                                  topic := Topic
                                  } = St0) ->
   St1 = St0#{?rediscover_client_tref => false},
   case wolff_client_sup:find_client(ClientId) of
@@ -227,16 +228,18 @@ handle_info(?rediscover_client, #{client_id := ClientId,
       {noreply, St};
     {error, Reason} ->
       log_error("failed_to_discover_client",
-                #{reason => Reason, client_id => ClientId}),
+                #{reason => Reason, topic => Topic, client_id => ClientId}),
       {noreply, ensure_rediscover_client_timer(St1)}
   end;
 handle_info(?init_producers, St) ->
   %% this is a retry of last failure when initializing producer procs
   {noreply, maybe_init_producers(St)};
 handle_info({'DOWN', _, process, Pid, Reason}, #{client_id := ClientId,
-                                                 client_pid := Pid
+                                                 client_pid := Pid,
+                                                 topic := Topic
                                                 } = St) ->
   log_error("client_pid_down", #{client_id => ClientId,
+                                 topic => Topic,
                                  client_pid => Pid,
                                  reason => Reason}),
   %% client down, try to discover it after a delay
