@@ -235,7 +235,7 @@ handle_info({'DOWN', _, process, Pid, Reason}, #{client_id := ClientId,
                                                  client_pid := Pid,
                                                  topic := Topic
                                                 } = St) ->
-  log_error("Client ~p for topic ~s down, pid: ~p, reason: ~p", [ClientId, Topic, Pid, Reason]),
+  log_error("Client ~s for topic ~s down, pid: ~p, reason: ~p", [ClientId, Topic, Pid, Reason]),
   %% client down, try to discover it after a delay
   %% producers should all monitor client pid,
   %% expect their 'EXIT' signals soon
@@ -365,7 +365,7 @@ refresh_partition_count(#{client_pid := Pid, topic := Topic} = St) ->
     {ok, Connections} ->
       start_new_producers(St, Connections);
     {error, Reason} ->
-      log_warning("failed_to_refresh_partition_count topic:~s, reason; ~p", [Topic, Reason]),
+      log_warning("failed_to_refresh_partition_count topic:~s, reason: ~p", [Topic, Reason]),
       St
   end.
 
