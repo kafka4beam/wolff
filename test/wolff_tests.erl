@@ -567,6 +567,41 @@ test_leader_restart() ->
   end,
   ok.
 
+%% wolff_client died by the time when wolff_producers tries to initialize producers
+%% it should not cause the wolff_producers_sup to restart
+producers_init_failure_test_() ->
+  {timeout, 10, fun() -> test_producers_init_failure() end}.
+
+test_producers_init_failure() ->
+   _ = application:stop(wolff),
+  {ok, _} = application:ensure_all_started(wolff),
+  ClientId = <<"proucers-init-failure-test">>,
+  Topic = <<"test-topic">>,
+  ClientCfg = #{connection_strategy => per_broker},
+  {ok, ClientPid} = wolff:ensure_supervised_client(ClientId, ?HOSTS, ClientCfg),
+  %% suspend the client so it will not respond to calls
+  sys:suspend(ClientPid),
+  ProducerCfg = #{required_acks => all_isr,
+                  partition_count_refresh_interval_seconds => 0
+                 },
+  %% this call will hang until the client pid is killed later
+  {TmpPid, _} = spawn_monitor(fun() -> {error, {killed, _}} = wolff_producers:start_linked_producers(ClientId, Topic, ProducerCfg), exit(normal) end),
+  %% wait a bit to ensure the spanwed process gets the chance to run
+  timer:sleep(100),
+  %% kill the client pid, so the gen_server:call towards the client will fail
+  exit(ClientPid, kill),
+  receive
+    {'DOWN', _, process, TmpPid, Reason} ->
+      ?assertEqual(normal, Reason)
+  after 2000 ->
+    error(timeout)
+  end,
+  %% cleanup
+  ok = wolff:stop_and_delete_supervised_client(ClientId),
+  ?assertEqual([], supervisor:which_children(wolff_client_sup)),
+  ok = application:stop(wolff),
+  ok.
+
 %% helpers
 
 %% verify wolff_client state upgrade.

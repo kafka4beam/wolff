@@ -1,3 +1,6 @@
+* 1.7.7 (merged 1.5.11)
+  - Fixed a try catch pattern in `gen_server` call towards client process, this should prevent `wolff_producers` from crash if `wolff_client` is killed during initialization. [#49](https://github.com/kafka4beam/wolff/pull/49)
+  - Enhance: use `off_heap` spawn option in producer processes for better gc performance. [#47](https://github.com/kafka4beam/wolff/pull/47)
 * 1.7.6
   - Expose wolff:check_if_topic_exists/3 for checking if a topic is created. [#45](https://github.com/kafka4beam/wolff/pull/45)
 * 1.7.5
