@@ -1,6 +1,9 @@
-%% -*-: erlang -*-
-{"1.5.11",
+%% -*- mode: erlang -*-
+{"1.5.12",
   [
+   {"1.5.11",
+     [ {load_module, wolff_client, brutal_purge, soft_purge, []}
+     ]},
     {"1.5.10",
      [ {load_module, wolff_client, brutal_purge, soft_purge, []}
      , {load_module, wolff_producers, brutal_purge, soft_purge, []}
@@ -34,6 +37,9 @@
     }
   ],
   [
+    {"1.5.11",
+      [ {load_module, wolff_client, brutal_purge, soft_purge, []}
+      ]},
     {"1.5.10",
      [ {load_module, wolff_client, brutal_purge, soft_purge, []}
      , {load_module, wolff_producers, brutal_purge, soft_purge, []}
