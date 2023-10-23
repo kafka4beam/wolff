@@ -455,6 +455,7 @@ tr_reason({{Host, Port}, Reason}) ->
       reason => do_tr_reason(Reason)
      }.
 
+do_tr_reason({{#kpro_req{}, Reason}, Stack}) -> do_tr_reason({Reason, Stack});
 do_tr_reason({timeout, _Stack}) -> connection_timed_out;
 do_tr_reason({enetunreach, _Stack}) -> unreachable_host;
 do_tr_reason({econnrefused, _Stack}) -> connection_refused;
