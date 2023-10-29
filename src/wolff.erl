@@ -35,7 +35,10 @@
          send_sync/3
         ]).
 
--export([check_connectivity/1, check_connectivity/2, check_if_topic_exists/3]).
+-export([check_connectivity/1,
+         check_connectivity/2,
+         check_if_topic_exists/2,
+         check_if_topic_exists/3]).
 
 %% for test
 -export([get_producer/2]).
@@ -152,3 +155,13 @@ check_connectivity(Hosts, ConnConfig) ->
         ok | {error, unknown_topic_or_partition | [#{host := binary(), reason := term()}] | any()}.
 check_if_topic_exists(Hosts, ConnConfig, Topic) ->
   wolff_client:check_if_topic_exists(Hosts, ConnConfig, Topic).
+
+%% @doc Check if a topic exists using a supervised client or a client porcess.
+-spec check_if_topic_exists(client_id() | pid(), topic()) -> ok | {error, unknown_topic_or_partition | any()}.
+check_if_topic_exists(ClientId, Topic) when is_binary(ClientId) ->
+  case wolff_client_sup:find_client(ClientId) of
+    {ok, Pid} -> check_if_topic_exists(Pid, Topic);
+    {error, Error} -> {error, Error}
+  end;
+check_if_topic_exists(ClientPid, Topic) when is_pid(ClientPid) ->
+  wolff_client:check_topic_exists_with_client_pid(ClientPid, Topic).

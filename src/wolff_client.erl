@@ -21,7 +21,7 @@
 -export([start_link/3, stop/1]).
 -export([get_leader_connections/2, recv_leader_connection/4, get_id/1, delete_producers_metadata/2]).
 -export([check_connectivity/1, check_connectivity/2]).
--export([check_if_topic_exists/2, check_if_topic_exists/3]).
+-export([check_if_topic_exists/2, check_if_topic_exists/3, check_topic_exists_with_client_pid/2]).
 
 %% gen_server callbacks
 -export([code_change/3, handle_call/3, handle_cast/2, handle_info/2, init/1, terminate/2]).
@@ -104,6 +104,7 @@ check_connectivity(Hosts, ConnConfig) when Hosts =/= [] ->
             {error, tr_reasons(Reasons)}
     end.
 
+%% @doc Check if a topic exists by creating a temp connecton to any of the seed hosts.
 -spec check_if_topic_exists([host()], kpro:conn_config(), topic()) ->
         ok | {error, unknown_topic_or_partition | [#{host := binary(), reason := term()}] | any()}.
 check_if_topic_exists(Hosts, ConnConfig, Topic) when Hosts =/= [] ->
@@ -126,6 +127,13 @@ check_if_topic_exists(Pid, Topic) when is_pid(Pid) ->
       {error, Errors}
   end.
 
+%% @doc Check if a topic exists by calling a already started client process.
+%% In contrast, check_if_topic_exists/3 creates a temp connection to do the work.
+-spec check_topic_exists_with_client_pid(pid(), topic()) ->
+        ok | {error, unknown_topic_or_partition | any()}.
+check_topic_exists_with_client_pid(Pid, Topic) ->
+    safe_call(Pid, {check_if_topic_exists, Topic}).
+
 safe_call(Pid, Call) ->
   try gen_server:call(Pid, Call, infinity)
   catch exit : Reason -> {error, Reason}
@@ -146,6 +154,8 @@ handle_call(Call, From, #{connect := _Fun} = St) ->
     handle_call(Call, From, upgrade(St));
 handle_call(get_id, _From, #{client_id := Id} = St) ->
   {reply, Id, St};
+handle_call({check_if_topic_exists, Topic}, _From, #{seed_hosts := Hosts, conn_config := ConnConfig} = St) ->
+  {reply, check_if_topic_exists(Hosts, ConnConfig, Topic), St};
 handle_call({get_leader_connections, Topic}, _From, St0) ->
   case ensure_leader_connections(St0, Topic) of
     {ok, St} ->
@@ -161,8 +171,8 @@ handle_call(stop, From, #{conns := Conns} = St) ->
 handle_call(check_connectivity, _From, #{seed_hosts := Hosts, conn_config := ConnConfig} = St) ->
   Res = check_connectivity(Hosts, ConnConfig),
   {reply, Res, St};
-handle_call(_Call, _From, St) ->
-  {noreply, St}.
+handle_call(Call, _From, St) ->
+  {reply, {error, {unknown_call, Call}}, St}.
 
 handle_info(_Info, St) ->
   {noreply, upgrade(St)}.
