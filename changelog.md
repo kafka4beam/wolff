@@ -1,5 +1,6 @@
-* 1.7.8 (merged 1.5.12)
-  - Improved logs when reporting connection errors.
+* 1.8.0
+  - Add wolff:check_if_topic_exists/2 for checking if a topic exists making use of an existing client process. [#52](https://github.com/kafka4beam/wolff/pull/52)
+  - Improved logs when reporting connection errors. (merged 1.5.12)
 * 1.7.7 (merged 1.5.11)
   - Fixed a try catch pattern in `gen_server` call towards client process, this should prevent `wolff_producers` from crash if `wolff_client` is killed during initialization. [#49](https://github.com/kafka4beam/wolff/pull/49)
   - Enhance: use `off_heap` spawn option in producer processes for better gc performance. [#47](https://github.com/kafka4beam/wolff/pull/47)
