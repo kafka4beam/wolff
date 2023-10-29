@@ -149,6 +149,6 @@ check_connectivity(Hosts, ConnConfig) ->
 
 %% @doc Check if the cluster is reachable and the topic is created.
 -spec check_if_topic_exists([host()], wolff_client:config(), topic()) ->
-        ok | {error, [{FormatedHostPort :: binary(), any()}]}.
+        ok | {error, unknown_topic_or_partition | [#{host := binary(), reason := term()}] | any()}.
 check_if_topic_exists(Hosts, ConnConfig, Topic) ->
   wolff_client:check_if_topic_exists(Hosts, ConnConfig, Topic).
