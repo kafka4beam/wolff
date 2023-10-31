@@ -22,7 +22,8 @@ start_producers(Client) ->
   ProducerCfg = #{required_acks => all_isr,
                   max_batch_bytes => 800*1000,
                   max_linger_ms => 1000,
-                  max_send_ahead => 100
+                  max_send_ahead => 100,
+                  enable_global_stats => true
                  },
   wolff:start_producers(Client, ?TOPIC, ProducerCfg).
 

@@ -627,7 +627,8 @@ to_old_client_state(St0) ->
 client_config() -> #{}.
 
 producer_config() ->
-  #{replayq_dir => "test-data"}.
+  #{replayq_dir => "test-data",
+    enable_global_stats => true}.
 
 key(Name) ->
   iolist_to_binary(io_lib:format("~p/~p", [Name, calendar:local_time()])).

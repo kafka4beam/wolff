@@ -440,7 +440,9 @@ fetch(Connection, Topic, Partition, Offset, MaxBytes) ->
 client_config() -> #{}.
 
 producer_config() ->
-  #{replayq_dir => "test-data"}.
+  #{replayq_dir => "test-data",
+    enable_global_stats => true
+   }.
 
 key(Name) ->
   iolist_to_binary(io_lib:format("~p/~p/~p", [Name, calendar:local_time(),
