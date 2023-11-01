@@ -1,3 +1,7 @@
+* 1.9.0
+  - No global stats collection by default.
+    There is a ets table based stats collector to record the number of sent bytes and messages. Consider this feature deprecated.
+    Since 1.7.0, there there is a better integration for metrics.
 * 1.8.0
   - Add wolff:check_if_topic_exists/2 for checking if a topic exists making use of an existing client process. [#52](https://github.com/kafka4beam/wolff/pull/52)
   - Improved logs when reporting connection errors. (merged 1.5.12)
@@ -20,8 +24,9 @@
   - Upgrade `kafka_protocol` from version 4.1.0 to 4.1.1 to enable customizing the SNI without needing to set the `verify_peer` option.
 * 1.7.1 (merged 1.5.9)
   - Fix: when picking a producer PID, if it was dead, it could lead to an error being raised. [#37](https://github.com/kafka4beam/wolff/pull/37)
-* 1.6.5
+* 1.7.0
   - Upgrade `kafka_protocol` from version 4.0.3 to version to 4.1.0 for SASL/GSSAPI auth support.
+  - Also added beam-telemetry for better metrics report.
 * 1.6.4 (merged 1.5.8)
 * 1.6.3 (merged 1.5.7)
   - Stop supervised producer if failed to start. Otherwise the caller may have to call the wolff:stop_and_delete_supervised_producers/3
