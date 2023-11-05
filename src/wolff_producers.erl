@@ -32,12 +32,14 @@
         #{workers := #{partition() => pid()} | ets:tab(),
           partitioner := partitioner(),
           client_id => wolff:client_id(),
-          topic => kpro:topic()
+          topic => kpro:topic(),
+          %% name is only present when started under wolff_producers_sup
+          name => wolff:name()
          }.
 
 -type topic() :: kpro:topic().
 -type partition() :: kpro:partition().
--type config_key() :: name | partitioner | partition_count_refresh_interval_seconds |
+-type config_key() :: name | partitioner | partition_count_refresh_interval_seconds | workers_table |
                       wolff_producer:config_key().
 -type config() :: #{config_key() => term()}.
 -type partitioner() :: random %% default
@@ -56,12 +58,23 @@
 -define(partition_count_refresh_interval_seconds, 300).
 -define(refresh_partition_count, refresh_partition_count).
 
-%% @doc start wolff_producdrs gen_server
+%% @doc Called by wolff_producers_sup to start wolff_producers process.
 start_link(ClientId, Topic, Config) ->
   Name = get_name(Config),
-  gen_server:start_link({local, Name}, ?MODULE, {ClientId, Topic, Config}, []).
+  case is_atom(Name) of
+    true ->
+      gen_server:start_link({local, Name}, ?MODULE, {ClientId, Topic, Config}, []);
+    false when is_map_key(workers_table, Config) ->
+      gen_server:start_link(?MODULE, {ClientId, Topic, Config}, []);
+    false ->
+      %% the caller must supply a ets table for wolff_producers process to store
+      %% the partition -> wolff_producer mapping
+      error(#{reason => missing_config,
+              missing => workers_table
+             })
+  end.
 
-%% @doc start wolff_producdrs gen_server
+%% @doc Start wolff_producer processes linked to caller.
 -spec start_linked_producers(wolff:client_id() | pid(), topic(), config()) ->
   {ok, producers()} | {error, any()}.
 start_linked_producers(ClientId, Topic, ProducerCfg) when is_binary(ClientId) ->
@@ -80,7 +93,8 @@ start_linked_producers(ClientId, ClientPid, Topic, ProducerCfg) ->
       {ok, #{client_id => ClientId,
              topic => Topic,
              workers => Workers,
-             partitioner => Partitioner}};
+             partitioner => Partitioner
+            }};
     {error, Reason} ->
       {error, Reason}
   end.
@@ -106,7 +120,8 @@ start_supervised(ClientId, Topic, ProducerCfg) ->
           {ok, #{client_id => ClientId,
                 topic => Topic,
                 workers => Ets,
-                partitioner => maps:get(partitioner, ProducerCfg, random)
+                partitioner => maps:get(partitioner, ProducerCfg, random),
+                name => get_name(ProducerCfg)
                 }}
       end;
     {error, Reason} ->
@@ -115,13 +130,13 @@ start_supervised(ClientId, Topic, ProducerCfg) ->
 
 %% @doc Ensure workers and clean up meta data.
 -spec stop_supervised(producers()) -> ok.
-stop_supervised(#{client_id := ClientId, workers := NamedEts, topic := Topic}) ->
-  stop_supervised(ClientId, Topic, NamedEts).
+stop_supervised(#{client_id := ClientId, workers := _, topic := Topic, name := Name}) ->
+  stop_supervised(ClientId, Topic, Name).
 
 %% @doc Ensure workers and clean up meta data.
 -spec stop_supervised(wolff:client_id(), topic(), wolff:name()) -> ok.
-stop_supervised(ClientId, Topic, NamedEts) ->
-  wolff_producers_sup:ensure_absence(ClientId, NamedEts),
+stop_supervised(ClientId, Topic, Name) ->
+  wolff_producers_sup:ensure_absence(ClientId, Name),
   case wolff_client_sup:find_client(ClientId) of
     {ok, Pid} ->
        ok = wolff_client:delete_producers_metadata(Pid, Topic);
@@ -319,7 +334,12 @@ maybe_init_producers(#{ets := ?not_initialized,
                       } = St) ->
   case start_linked_producers(ClientId, Topic, Config) of
     {ok, #{workers := Workers}} ->
-      Ets = ets:new(get_name(Config), [protected, named_table, {read_concurrency, true}]),
+      Ets = case maps:get(workers_table, Config, undefined) of
+        undefined ->
+          ets:new(get_name(Config), [protected, named_table, {read_concurrency, true}]);
+        Table ->
+          Table
+      end,
       true = ets:insert(Ets, maps:to_list(Workers)),
       St#{ets := Ets};
     {error, Reason} ->

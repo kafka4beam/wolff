@@ -41,7 +41,12 @@ supervised_client_test() ->
   wolff_tests:deinstall_event_logging(?FUNCTION_NAME),
   ok.
 
-supervised_producers_test() ->
+supervised_producers_test_() ->
+  [{"atom-name", fun() -> test_supervised_producers(test_producers) end},
+   {"binary-name", fun() -> test_supervised_producers(<<"test-producers">>) end}
+  ].
+
+test_supervised_producers(Name) ->
   CntrEventsTable = ets:new(cntr_events, [public]),
   wolff_tests:install_event_logging(?FUNCTION_NAME, CntrEventsTable, false),
   ClientId = <<"supervised-producers">>,
@@ -49,10 +54,10 @@ supervised_producers_test() ->
   {ok, _} = application:ensure_all_started(wolff),
   ClientCfg = client_config(),
   {ok, _ClientPid} = wolff:ensure_supervised_client(ClientId, ?HOSTS, ClientCfg),
-  ProducerCfg0 = producer_config(),
+  ProducerCfg0 = producer_config(Name),
   ProducerCfg = ProducerCfg0#{required_acks => all_isr},
   {ok, Producers} = wolff:ensure_supervised_producers(ClientId, <<"test-topic">>, ProducerCfg),
-  {ok, Producers} = wolff:ensure_supervised_producers(ClientId, <<"test-topic">>, ProducerCfg), %% assert
+  ?assertEqual({ok, Producers}, wolff:ensure_supervised_producers(ClientId, <<"test-topic">>, ProducerCfg)),
   Msg = #{key => ?KEY, value => <<"value">>},
   Self = self(),
   AckFun = fun(_Partition, _BaseOffset) -> Self ! acked, ok end,
@@ -440,8 +445,16 @@ fetch(Connection, Topic, Partition, Offset, MaxBytes) ->
 client_config() -> #{}.
 
 producer_config() ->
+  producer_config(_Name = wolff_producers).
+
+producer_config(Name) ->
   #{replayq_dir => "test-data",
-    enable_global_stats => true
+    enable_global_stats => true,
+    name => Name,
+    workers_table => case is_atom(Name) of
+      true -> undefined;
+      false -> ets:new(?MODULE, [public])
+    end
    }.
 
 key(Name) ->
