@@ -11,4 +11,5 @@
 %% Since Kafka 2.4, it has been extended to 1048588.
 %% We keep it backward compatible here.
 -define(WOLFF_KAFKA_DEFAULT_MAX_MESSAGE_BYTES, 1000000).
+-define(WOLFF_PRODUCERS_GLOBAL_TABLE, wolff_producers_global).
 -endif.

@@ -17,7 +17,7 @@ supervised_client_test() ->
   %% start it again should result in the same client pid
   ?assertEqual({ok, Client},
                wolff:ensure_supervised_client(ClientId, ?HOSTS, ClientCfg)),
-  ProducerCfg0 = producer_config(),
+  ProducerCfg0 = producer_config(?FUNCTION_NAME),
   ProducerCfg = ProducerCfg0#{required_acks => leader_only},
   {ok, Producers} = wolff:start_producers(Client, <<"test-topic">>, ProducerCfg),
   Msg = #{key => ?KEY, value => <<"value">>},
@@ -41,7 +41,12 @@ supervised_client_test() ->
   wolff_tests:deinstall_event_logging(?FUNCTION_NAME),
   ok.
 
-supervised_producers_test() ->
+supervised_producers_test_() ->
+  [{"atom-name", fun() -> test_supervised_producers(test_producers) end},
+   {"binary-name", fun() -> test_supervised_producers(<<"test-producers">>) end}
+  ].
+
+test_supervised_producers(Name) ->
   CntrEventsTable = ets:new(cntr_events, [public]),
   wolff_tests:install_event_logging(?FUNCTION_NAME, CntrEventsTable, false),
   ClientId = <<"supervised-producers">>,
@@ -49,10 +54,10 @@ supervised_producers_test() ->
   {ok, _} = application:ensure_all_started(wolff),
   ClientCfg = client_config(),
   {ok, _ClientPid} = wolff:ensure_supervised_client(ClientId, ?HOSTS, ClientCfg),
-  ProducerCfg0 = producer_config(),
+  ProducerCfg0 = producer_config(Name),
   ProducerCfg = ProducerCfg0#{required_acks => all_isr},
   {ok, Producers} = wolff:ensure_supervised_producers(ClientId, <<"test-topic">>, ProducerCfg),
-  {ok, Producers} = wolff:ensure_supervised_producers(ClientId, <<"test-topic">>, ProducerCfg), %% assert
+  ?assertEqual({ok, Producers}, wolff:ensure_supervised_producers(ClientId, <<"test-topic">>, ProducerCfg)),
   Msg = #{key => ?KEY, value => <<"value">>},
   Self = self(),
   AckFun = fun(_Partition, _BaseOffset) -> Self ! acked, ok end,
@@ -93,7 +98,8 @@ test_client_restart(ClientId, Topic, Partition) ->
   ProducerCfg = #{replayq_dir => "test-data/client-restart-test",
                   required_acks => all_isr,
                   partitioner => Partition, %% always send to the same partition
-                  partition_count_refresh_interval_seconds => 0
+                  partition_count_refresh_interval_seconds => 0,
+                  name => ?FUNCTION_NAME
                  },
   {ok, Producers} = wolff:ensure_supervised_producers(ClientId, Topic, ProducerCfg),
   Msg1 = #{key => ?KEY, value => <<"1">>},
@@ -125,7 +131,7 @@ bad_host_test() ->
   _ = application:stop(wolff), %% ensure stopped
   {ok, _} = application:ensure_all_started(wolff),
   {ok, _} = wolff:ensure_supervised_client(ClientId, [{"badhost", 9092}], #{}),
-  ?assertMatch({error, _}, wolff:ensure_supervised_producers(ClientId, <<"t">>, #{})),
+  ?assertMatch({error, _}, wolff:ensure_supervised_producers(ClientId, <<"t">>, #{name => ?FUNCTION_NAME})),
   ok = wolff:stop_and_delete_supervised_client(ClientId).
 
 producer_restart_test() ->
@@ -141,11 +147,12 @@ producer_restart_test() ->
   ProducerCfg = #{replayq_dir => "test-data/producer-restart-test",
                   required_acks => all_isr,
                   partitioner => Partition,
-                  reconnect_delay_ms => 0
+                  reconnect_delay_ms => 0,
+                  name => ?FUNCTION_NAME
                  },
   {ok, Producers} = wolff:ensure_supervised_producers(ClientId, Topic, ProducerCfg),
-  #{workers := Ets} = Producers,
-  GetPid = fun() -> [{Partition, Pid}] = ets:lookup(Ets, Partition), Pid end,
+  #{workers := Name} = Producers,
+  GetPid = fun() -> {ok, Pid} = wolff_producers:find_producer_by_partition(Name, Partition), Pid end,
   Producer0 = GetPid(),
   Msg0 = #{key => ?KEY, value => <<"0">>},
   {0, Offset0} = wolff_producer:send_sync(Producer0, [Msg0], 2000),
@@ -272,7 +279,7 @@ fail_retry_success_test() ->
   {ok, _} = application:ensure_all_started(wolff),
   ClientCfg = client_config(),
   {ok, _ClientPid} = wolff:ensure_supervised_client(ClientId, ?HOSTS, ClientCfg),
-  ProducerCfg0 = producer_config(),
+  ProducerCfg0 = producer_config(?FUNCTION_NAME),
   ProducerCfg = ProducerCfg0#{required_acks => all_isr},
   {ok, Producers} = wolff:ensure_supervised_producers(ClientId, <<"test-topic">>, ProducerCfg),
   Msg = #{key => ?KEY, value => <<"value">>},
@@ -322,7 +329,7 @@ fail_retry_failed_test() ->
      {ok, _} = application:ensure_all_started(wolff),
      ClientCfg = client_config(),
      {ok, _ClientPid} = wolff:ensure_supervised_client(ClientId, ?HOSTS, ClientCfg),
-     ProducerCfg0 = producer_config(),
+     ProducerCfg0 = producer_config(?FUNCTION_NAME),
      ProducerCfg = ProducerCfg0#{required_acks => all_isr},
      {ok, Producers} = wolff:ensure_supervised_producers(ClientId, <<"test-topic">>, ProducerCfg),
      Msg = #{key => ?KEY, value => <<"value">>},
@@ -439,9 +446,10 @@ fetch(Connection, Topic, Partition, Offset, MaxBytes) ->
 
 client_config() -> #{}.
 
-producer_config() ->
+producer_config(Name) ->
   #{replayq_dir => "test-data",
-    enable_global_stats => true
+    enable_global_stats => true,
+    name => Name
    }.
 
 key(Name) ->

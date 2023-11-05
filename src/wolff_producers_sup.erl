@@ -21,7 +21,6 @@
 -export([ensure_present/3, ensure_absence/2]).
 
 -define(SUPERVISOR, ?MODULE).
--define(WORKER_ID(ClientId, Topic), {ClientId, Topic}).
 
 start_link() ->
   supervisor:start_link({local, ?SUPERVISOR}, ?MODULE, []).
@@ -47,19 +46,20 @@ ensure_present(ClientId, Topic, Config) ->
 
 %% ensure client stopped and deleted under supervisor
 -spec ensure_absence(wolff:client_id(), wolff:name()) -> ok.
-ensure_absence(ClientId, Name) ->
-  Id = ?WORKER_ID(ClientId, Name),
+ensure_absence(_ClientId, Name) ->
+  Id = Name,
   case supervisor:terminate_child(?SUPERVISOR, Id) of
-    ok -> ok = supervisor:delete_child(?SUPERVISOR, Id);
-    {error, not_found} -> ok
+    ok ->
+      ok = wolff_producers:cleanup_workers_table(Name),
+      ok = supervisor:delete_child(?SUPERVISOR, Id);
+    {error, not_found} ->
+      ok
   end.
 
-child_spec(ClientId, Topic, Config) ->
-  #{id => ?WORKER_ID(ClientId, get_name(Config)),
+child_spec(ClientId, Topic, #{name := Name} = Config) ->
+  #{id => Name,
     start => {wolff_producers, start_link, [ClientId, Topic, Config]},
     restart => transient,
     type => worker,
     modules => [wolff_producers]
    }.
-
-get_name(Config) -> maps:get(name, Config, wolff_producers).

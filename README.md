@@ -165,10 +165,10 @@ wolff:send(Producers, [Msg], AckFun).
    `fun((PartitionCount, [msg()]) -> partition())`: Caller defined callback.
    `partition()`: Caller specified exact partition.
 
-* `name`: default=`wolff_producers`
-   Atom used to register producer manager process when starting producers
-   under wolff's supervision tree. It is also used as the ets table name
-   for producer worker lookup.
+* `name`: `atom() | binary()`, Mandatory when started under wolff's supervision tree.
+   The name, (eg. `{clientid}-{topicname}`) should be globally unique as it
+   is used as the namespace for partition-producder process registration.
+   An atom name is also used to register `wolff_producers` process.
 
 * `partition_count_refresh_interval_seconds`: default=`300` (5 minutes)
   Non-negative integer to refresh topic metadata in order to auto-discover newly added partitions.
