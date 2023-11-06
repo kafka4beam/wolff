@@ -126,8 +126,9 @@ wolff:send(Producers, [Msg], AckFun).
    a delay before trying to reconnect.
 
 * Connection level configs are merged into `wolff` client config, including:
-  `iconnect_timeout`, `client_id`, `extra_sock_opts`, `query_api_versions`,
-  `request_timeout`, `sasl` and `ssl`. Ref: [kpro_connection.erl](https://github.com/klarna/kafka_protocol/blob/master/src/kpro_connection.erl)
+  `connect_timeout`, `client_id`, `extra_sock_opts`, `query_api_versions`,
+  `request_timeout`, `sasl` and `ssl`.
+  Ref: [kpro_connection.erl](https://github.com/klarna/kafka_protocol/blob/master/src/kpro_connection.erl)
 
 ## Producer Config
 

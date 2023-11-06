@@ -400,7 +400,8 @@ get_metadata([Host | Rest], ConnConfig, Topic, Errors) ->
       try
         {ok, Vsns} = kpro:get_api_versions(Pid),
         {_, Vsn} = maps:get(metadata, Vsns),
-        do_get_metadata(Vsn, Pid, Topic)
+        Timeout = maps:get(request_timeout, ConnConfig, ?DEFAULT_METADATA_TIMEOUT),
+        do_get_metadata(Vsn, Pid, Topic, Timeout)
       after
         _ = close_connection(Pid)
       end;
@@ -409,8 +410,11 @@ get_metadata([Host | Rest], ConnConfig, Topic, Errors) ->
   end.
 
 do_get_metadata(Vsn, Connection, Topic) ->
+    do_get_metadata(Vsn, Connection, Topic, ?DEFAULT_METADATA_TIMEOUT).
+
+do_get_metadata(Vsn, Connection, Topic, Timeout) ->
   Req = kpro_req_lib:metadata(Vsn, [Topic], _IsAutoCreateAllowed = false),
-  case kpro:request_sync(Connection, Req, ?DEFAULT_METADATA_TIMEOUT) of
+  case kpro:request_sync(Connection, Req, Timeout) of
     {ok, #kpro_rsp{msg = Meta}} ->
       BrokersMeta = kpro:find(brokers, Meta),
       Brokers = [parse_broker_meta(M) || M <- BrokersMeta],
