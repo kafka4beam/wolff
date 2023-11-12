@@ -2,6 +2,10 @@
   - No global stats collection by default.
     There is a ets table based stats collector to record the number of sent bytes and messages. Consider this feature deprecated.
     Since 1.7.0, there there is a better integration for metrics.
+  - For supervised producers, use a global ets table (named `wolff_producers_global`) to store producer workers.
+    This should avoid having to create an atom for each supervised topic producer.
+  - Respect `request_timeout` in connection config when fetching metadata.
+
 * 1.8.0
   - Add wolff:check_if_topic_exists/2 for checking if a topic exists making use of an existing client process. [#52](https://github.com/kafka4beam/wolff/pull/52)
   - Improved logs when reporting connection errors. (merged 1.5.12)

@@ -2,8 +2,6 @@ version: '2'
 services:
   zookeeper:
     image: wurstmeister/zookeeper
-    ports:
-      - "2181:2181"
     container_name: wolff-zk
   kafka_1:
     depends_on:
@@ -35,4 +33,3 @@ services:
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: DEFAULT:PLAINTEXT,INTRA:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: INTRA
       KAFKA_CREATE_TOPICS: test-topic-r2:1:2
-

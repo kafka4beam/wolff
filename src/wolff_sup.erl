@@ -16,6 +16,8 @@
 
 -behaviour(supervisor).
 
+-include("wolff.hrl").
+
 -export([start_link/0, init/1]).
 
 start_link() -> supervisor:start_link({local, ?MODULE}, ?MODULE, []).
@@ -25,6 +27,7 @@ init([]) ->
                intensity => 10,
                period => 5},
   Children = [stats_worker(), client_sup(), producers_sup()],
+  ets:new(?WOLFF_PRODUCERS_GLOBAL_TABLE, [named_table, public, ordered_set, {read_concurrency, true}]),
   {ok, {SupFlags, Children}}.
 
 stats_worker() ->

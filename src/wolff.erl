@@ -50,7 +50,7 @@
 -type host() :: kpro:endpoint().
 -type topic() :: kpro:topic().
 -type partition() :: kpro:partition().
--type name() :: atom().
+-type name() :: atom() | binary().
 -type offset() :: kpro:offset().
 -type offset_reply() :: offset() | buffer_overflow_discarded.
 -type producers_cfg() :: wolff_producers:config().
