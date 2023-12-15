@@ -1,3 +1,7 @@
+* 1.9.1
+  - Use ETS (named `wolff_clients_global`) for client ID registration.
+    When there are thousands of clients, `supervisor:which_children` becomes quite expensive.
+
 * 1.9.0
   - No global stats collection by default.
     There is a ets table based stats collector to record the number of sent bytes and messages. Consider this feature deprecated.

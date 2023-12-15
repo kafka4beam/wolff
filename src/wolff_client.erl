@@ -146,8 +146,9 @@ recv_leader_connection(Client, Topic, Partition, Pid) ->
 delete_producers_metadata(Client, Topic) ->
     gen_server:cast(Client, {delete_producers_metadata, Topic}).
 
-init(St) ->
+init(#{client_id := ClientID} = St) ->
   erlang:process_flag(trap_exit, true),
+  ok = wolff_client_sup:register_client(ClientID),
   {ok, St}.
 
 handle_call(Call, From, #{connect := _Fun} = St) ->
@@ -203,7 +204,8 @@ handle_cast(_Cast, St) ->
 code_change(_OldVsn, St, _Extra) ->
   {ok, St}.
 
-terminate(_, #{conns := Conns} = St) ->
+terminate(_, #{client_id := ClientID, conns := Conns} = St) ->
+  ok = wolff_client_sup:deregister_client(ClientID),
   ok = close_connections(Conns),
   {ok, St#{conns := #{}}}.
 
