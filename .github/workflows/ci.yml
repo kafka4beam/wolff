@@ -11,8 +11,8 @@ jobs:
       fail-fast: false
       matrix:
         otp:
-          - '24.1'
-          - '23.3.4.7'
+          - '26.2'
+          - '25.3'
         kafka:
           - '2.4'
           - '1.1'

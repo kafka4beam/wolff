@@ -77,7 +77,7 @@
 -define(ACK_CB(AckCb, Partition), {AckCb, Partition}).
 
 -type queue_item() :: {kpro:req(), replayq:ack_ref(), [{_CallId, _MsgCount}]}.
--type state() :: #{ call_id_base := timer:time()
+-type state() :: #{ call_id_base := pos_integer()
                   , client_id := wolff:client_id()
                   , config := config()
                   , conn := undefined | _

@@ -151,8 +151,7 @@ producer_restart_test() ->
                   name => ?FUNCTION_NAME
                  },
   {ok, Producers} = wolff:ensure_supervised_producers(ClientId, Topic, ProducerCfg),
-  #{workers := Name} = Producers,
-  GetPid = fun() -> {ok, Pid} = wolff_producers:find_producer_by_partition(Name, Partition), Pid end,
+  GetPid = fun() -> {ok, Pid} = wolff_producers:find_producer_by_partition(ClientId, Topic, Partition), Pid end,
   Producer0 = GetPid(),
   Msg0 = #{key => ?KEY, value => <<"0">>},
   {0, Offset0} = wolff_producer:send_sync(Producer0, [Msg0], 2000),
@@ -197,7 +196,7 @@ stop_with_name_test() ->
                  },
   {ok, _} = wolff:ensure_supervised_producers(ClientId, Topic, ProducerCfg),
   %% cleanup
-  ok = wolff:stop_and_delete_supervised_producers(ClientId, Topic, Name),
+  ok = wolff:stop_and_delete_supervised_producers(ClientId, Topic),
   ?assertEqual([], supervisor:which_children(wolff_producers_sup)),
   ok = wolff:stop_and_delete_supervised_client(ClientId),
   ?assertEqual([], supervisor:which_children(wolff_client_sup)),

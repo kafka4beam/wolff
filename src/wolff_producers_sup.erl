@@ -45,21 +45,24 @@ ensure_present(ClientId, Topic, Config) ->
   end.
 
 %% ensure client stopped and deleted under supervisor
--spec ensure_absence(wolff:client_id(), wolff:name()) -> ok.
-ensure_absence(_ClientId, Name) ->
-  Id = Name,
+-spec ensure_absence(wolff:client_id(), wolff:topic()) -> ok.
+ensure_absence(ClientId, Topic) ->
+  Id = worker_id(ClientId, Topic),
   case supervisor:terminate_child(?SUPERVISOR, Id) of
     ok ->
-      ok = wolff_producers:cleanup_workers_table(Name),
+      ok = wolff_producers:cleanup_workers_table(ClientId, Topic),
       ok = supervisor:delete_child(?SUPERVISOR, Id);
     {error, not_found} ->
       ok
   end.
 
-child_spec(ClientId, Topic, #{name := Name} = Config) ->
-  #{id => Name,
+child_spec(ClientId, Topic, Config) ->
+  #{id => worker_id(ClientId, Topic),
     start => {wolff_producers, start_link, [ClientId, Topic, Config]},
     restart => transient,
     type => worker,
     modules => [wolff_producers]
    }.
+
+worker_id(ClientId, Topic) ->
+  {ClientId, Topic}.

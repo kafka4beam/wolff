@@ -1,13 +1,14 @@
 {application, wolff,
  [{description, "Kafka's publisher"},
-  {vsn, "1.8.0"},
+  {vsn, "1.9.1"},
   {registered, []},
   {applications,
    [kernel,
     stdlib,
     kafka_protocol,
     replayq,
-    telemetry
+    telemetry,
+    lc
    ]},
   {env,[]},
   {mod, {wolff_app, start}},
