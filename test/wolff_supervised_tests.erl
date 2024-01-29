@@ -123,6 +123,30 @@ test_client_restart(ClientId, Topic, Partition) ->
   wolff_tests:deinstall_event_logging(?FUNCTION_NAME),
   ok.
 
+max_partitions_test() ->
+  ClientId = <<"max-partitions-test">>,
+  Topic = <<"test-topic-2">>,
+  Partition = 0,
+  MaxPartitions = 1,
+  _ = application:stop(wolff), %% ensure stopped
+  {ok, _} = application:ensure_all_started(wolff),
+  ClientCfg = #{connection_strategy => per_partition},
+  {ok, _ClientPid} = wolff:ensure_supervised_client(ClientId, ?HOSTS, ClientCfg),
+  ProducerCfg = #{required_acks => all_isr,
+                  partitioner => Partition,
+                  max_partitions => MaxPartitions
+                 },
+  {ok, Producers} = wolff:ensure_supervised_producers(ClientId, Topic, ProducerCfg),
+  %% the topic has two partitions, but limited only to started one producer
+  ?assertMatch([_], wolff_producers:find_producers_by_client_topic(ClientId, Topic)),
+  %% cleanup
+  ok = wolff:stop_and_delete_supervised_producers(Producers),
+  ?assertEqual([], supervisor:which_children(wolff_producers_sup)),
+  ok = wolff:stop_and_delete_supervised_client(ClientId),
+  ?assertEqual([], supervisor:which_children(wolff_client_sup)),
+  ok = application:stop(wolff),
+  ok.
+
 %% Test against a bad host.
 %% No connection will be established at all.
 %% Producer workers should not crash, async APIs should work.

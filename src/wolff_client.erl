@@ -19,7 +19,11 @@
 
 %% APIs
 -export([start_link/3, stop/1]).
--export([get_leader_connections/2, recv_leader_connection/4, get_id/1, delete_producers_metadata/2]).
+-export([get_leader_connections/2,
+         get_leader_connections/3,
+         recv_leader_connection/5,
+         get_id/1,
+         delete_producers_metadata/2]).
 -export([check_connectivity/1, check_connectivity/2]).
 -export([check_if_topic_exists/2, check_if_topic_exists/3, check_topic_exists_with_client_pid/2]).
 
@@ -88,7 +92,12 @@ get_id(Pid) ->
 -spec get_leader_connections(pid(), topic()) ->
         {ok, [{partition(), pid() | ?conn_down(_)}]} | {error, any()}.
 get_leader_connections(Client, Topic) ->
-   safe_call(Client, {get_leader_connections, Topic}).
+   safe_call(Client, {get_leader_connections, Topic, all_partitions}).
+
+-spec get_leader_connections(pid(), topic(), pos_integer()) ->
+        {ok, [{partition(), pid() | ?conn_down(_)}]} | {error, any()}.
+get_leader_connections(Client, Topic, MaxPartitions) ->
+   safe_call(Client, {get_leader_connections, Topic, MaxPartitions}).
 
 -spec check_connectivity(pid()) -> ok | {error, any()}.
 check_connectivity(Pid) ->
@@ -140,8 +149,8 @@ safe_call(Pid, Call) ->
   end.
 
 %% request client to send Pid the leader connection.
-recv_leader_connection(Client, Topic, Partition, Pid) ->
-  gen_server:cast(Client, {recv_leader_connection, Topic, Partition, Pid}).
+recv_leader_connection(Client, Topic, Partition, Pid, MaxPartitions) ->
+  gen_server:cast(Client, {recv_leader_connection, Topic, Partition, Pid, MaxPartitions}).
 
 delete_producers_metadata(Client, Topic) ->
     gen_server:cast(Client, {delete_producers_metadata, Topic}).
@@ -157,8 +166,8 @@ handle_call(get_id, _From, #{client_id := Id} = St) ->
   {reply, Id, St};
 handle_call({check_if_topic_exists, Topic}, _From, #{seed_hosts := Hosts, conn_config := ConnConfig} = St) ->
   {reply, check_if_topic_exists(Hosts, ConnConfig, Topic), St};
-handle_call({get_leader_connections, Topic}, _From, St0) ->
-  case ensure_leader_connections(St0, Topic) of
+handle_call({get_leader_connections, Topic, MaxPartitions}, _From, St0) ->
+  case ensure_leader_connections(St0, Topic, MaxPartitions) of
     {ok, St} ->
       Result = do_get_leader_connections(St, Topic),
       {reply, {ok, Result}, St};
@@ -180,8 +189,8 @@ handle_info(_Info, St) ->
 
 handle_cast(Cast, #{connect := _Fun} = St) ->
     handle_cast(Cast, upgrade(St));
-handle_cast({recv_leader_connection, Topic, Partition, Caller}, St0) ->
-  case ensure_leader_connections(St0, Topic) of
+handle_cast({recv_leader_connection, Topic, Partition, Caller, MaxConnections}, St0) ->
+  case ensure_leader_connections(St0, Topic, MaxConnections) of
     {ok, St} ->
       Partitions = do_get_leader_connections(St, Topic),
       %% the Partition in argument is a result of ensure_leader_connections
@@ -258,20 +267,21 @@ is_metadata_fresh(#{metadata_ts := Topics, config := Config}, Topic) ->
     Ts -> timer:now_diff(erlang:timestamp(), Ts) < MinInterval * 1000
   end.
 
--spec ensure_leader_connections(state(), topic()) ->
+-spec ensure_leader_connections(state(), topic(), all_partitions | pos_integer()) ->
   {ok, state()} | {error, any()}.
-ensure_leader_connections(St, Topic) ->
+ensure_leader_connections(St, Topic, MaxPartitions) ->
   case is_metadata_fresh(St, Topic) of
     true -> {ok, St};
-    false -> do_ensure_leader_connections(St, Topic)
+    false -> do_ensure_leader_connections(St, Topic, MaxPartitions)
   end.
 
 do_ensure_leader_connections(#{conn_config := ConnConfig,
                                seed_hosts := SeedHosts,
                                metadata_ts := MetadataTs
-                              } = St0, Topic) ->
+                              } = St0, Topic, MaxPartitions) ->
   case get_metadata(SeedHosts, ConnConfig, Topic) of
-    {ok, {Brokers, PartitionMetaList}} ->
+    {ok, {Brokers, PartitionMetaList0}} ->
+      PartitionMetaList = limit_partitions_count(PartitionMetaList0, MaxPartitions),
       St = lists:foldl(fun(PartitionMeta, StIn) ->
                            ensure_leader_connection(StIn, Brokers, Topic, PartitionMeta)
                        end, St0, PartitionMetaList),
@@ -280,6 +290,11 @@ do_ensure_leader_connections(#{conn_config := ConnConfig,
       log_warn(failed_to_fetch_metadata, #{topic => Topic, errors => Errors}),
       {error, failed_to_fetch_metadata}
   end.
+
+limit_partitions_count(PartitionMetaList, Max) when is_integer(Max) andalso Max < length(PartitionMetaList) ->
+  lists:sublist(PartitionMetaList, Max);
+limit_partitions_count(PartitionMetaList, all_partitions) ->
+  PartitionMetaList.
 
 %% This function ensures each Topic-Partition pair has a connection record
 %% either a pid when the leader is healthy, or the error reason
