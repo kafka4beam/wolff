@@ -60,6 +60,7 @@
 -define(initialized, initialized).
 -define(partition_count_refresh_interval_seconds, 300).
 -define(refresh_partition_count, refresh_partition_count).
+-define(partition_count_unavailable, -1).
 
 %% @doc Called by wolff_producers_sup to start wolff_producers process.
 start_link(ClientId, Topic, Config) ->
@@ -452,9 +453,20 @@ start_new_producers(#{client_id := ClientId,
   end,
   St.
 
+
+-if(OTP_RELEASE >= "26").
 get_partition_cnt(ClientId, Topic) ->
-  [{_, Count}] = ets:lookup(?WOLFF_PRODUCERS_GLOBAL_TABLE, {ClientId, Topic, partition_count}),
-  Count.
+  ets:lookup_element(?WOLFF_PRODUCERS_GLOBAL_TABLE, {ClientId, Topic, partition_count},
+                     2, ?partition_count_unavailable).
+-else.
+get_partition_cnt(ClientId, Topic) ->
+  try ets:lookup_element(?WOLFF_PRODUCERS_GLOBAL_TABLE, {ClientId, Topic, partition_count},
+                     2)
+  catch
+    error:badarg ->
+      ?partition_count_unavailable
+  end.
+-endif.
 
 put_partition_cnt(ClientId, Topic, Count) ->
   _ = ets:insert(?WOLFF_PRODUCERS_GLOBAL_TABLE, {{ClientId, Topic, partition_count}, Count}),
