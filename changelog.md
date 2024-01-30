@@ -1,3 +1,6 @@
+* 1.10.0
+  - Add `max_partitions` producer config to limit the number of partition producers so the client side is also possible to have control over resource utilization.
+
 * 1.9.1
   - Use ETS (named `wolff_clients_global`) for client ID registration.
     When there are thousands of clients, `supervisor:which_children` becomes quite expensive.

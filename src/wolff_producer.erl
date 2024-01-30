@@ -47,7 +47,8 @@
                       max_send_ahead |
                       compression |
                       drop_if_highmem |
-                      telemetry_meta_data.
+                      telemetry_meta_data |
+                      max_partitions.
 
 -type config() :: #{replayq_dir := string(),
                     replayq_max_total_bytes => pos_integer(),
@@ -61,7 +62,8 @@
                     compression => kpro:compress_option(),
                     drop_if_highmem => boolean(),
                     telemetry_meta_data => map(),
-                    enable_global_stats => boolean()
+                    enable_global_stats => boolean(),
+                    max_partitions => pos_integer()
                    }.
 
 -define(no_timer, no_timer).
@@ -590,13 +592,14 @@ log_connection_down(Topic, Partition, Conn, Reason) ->
            "connection_to_partition_leader_error",
            #{conn => Conn, reason => Reason}).
 
-ensure_delayed_reconnect(#{config := #{reconnect_delay_ms := Delay0},
+ensure_delayed_reconnect(#{config := #{reconnect_delay_ms := Delay0} = Config,
                            client_id := ClientId,
                            topic := Topic,
                            partition := Partition,
                            reconnect_timer := ?no_timer
                           } = St, DelayStrategy) ->
   Attempts = maps:get(reconnect_attempts, St, 0),
+  MaxPartitions = maps:get(max_partitions, Config, all_partitions),
   Attempts > 0 andalso Attempts rem 10 =:= 0 andalso
     log_error(Topic, Partition,
               "producer_is_still_disconnected_after_retry",
@@ -613,7 +616,7 @@ ensure_delayed_reconnect(#{config := #{reconnect_delay_ms := Delay0},
     end,
   case wolff_client_sup:find_client(ClientId) of
     {ok, ClientPid} ->
-      Args = [ClientPid, Topic, Partition, self()],
+      Args = [ClientPid, Topic, Partition, self(), MaxPartitions],
       {ok, Tref} = timer:apply_after(Delay, wolff_client, recv_leader_connection, Args),
       St#{reconnect_timer => Tref, reconnect_attempts => Attempts + 1};
     {error, Reason} ->

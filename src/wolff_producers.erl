@@ -20,6 +20,7 @@
 -export([start_linked_producers/3, stop_linked/1]).
 -export([start_supervised/3, stop_supervised/1, stop_supervised/2]).
 -export([pick_producer/2, lookup_producer/2, cleanup_workers_table/2]).
+-export([find_producers_by_client_topic/2]).
 
 %% gen_server callbacks
 -export([code_change/3, handle_call/3, handle_cast/2, handle_info/2, init/1, terminate/2]).
@@ -61,6 +62,7 @@
 -define(partition_count_refresh_interval_seconds, 300).
 -define(refresh_partition_count, refresh_partition_count).
 -define(partition_count_unavailable, -1).
+-define(all_partitions, all_partitions).
 
 %% @doc Called by wolff_producers_sup to start wolff_producers process.
 start_link(ClientId, Topic, Config) ->
@@ -83,7 +85,8 @@ start_linked_producers(ClientPid, Topic, ProducerCfg) when is_pid(ClientPid) ->
   start_linked_producers(ClientId, ClientPid, Topic, ProducerCfg).
 
 start_linked_producers(ClientId, ClientPid, Topic, ProducerCfg) ->
-  case wolff_client:get_leader_connections(ClientPid, Topic) of
+  MaxPartitions = maps:get(max_partitions, ProducerCfg, ?all_partitions),
+  case wolff_client:get_leader_connections(ClientPid, Topic, MaxPartitions) of
     {ok, Connections} ->
       Workers = start_link_producers(ClientId, Topic, Connections, ProducerCfg),
       ok = put_partition_cnt(ClientId, Topic, maps:size(Workers)),
@@ -416,8 +419,9 @@ refresh_partition_count(#{client_pid := Pid} = St) when not is_pid(Pid) ->
 refresh_partition_count(#{producers_status := ?not_initialized} = St) ->
   %% to be initialized
   St;
-refresh_partition_count(#{client_pid := Pid, topic := Topic} = St) ->
-  case wolff_client:get_leader_connections(Pid, Topic) of
+refresh_partition_count(#{client_pid := Pid, topic := Topic, config := Config} = St) ->
+  MaxPartitions = maps:get(max_partitions, Config, ?all_partitions),
+  case wolff_client:get_leader_connections(Pid, Topic, MaxPartitions) of
     {ok, Connections} ->
       start_new_producers(St, Connections);
     {error, Reason} ->
