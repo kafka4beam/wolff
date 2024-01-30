@@ -293,7 +293,7 @@ do_ensure_leader_connections(#{conn_config := ConnConfig,
 
 limit_partitions_count(PartitionMetaList, Max) when is_integer(Max) andalso Max < length(PartitionMetaList) ->
   lists:sublist(PartitionMetaList, Max);
-limit_partitions_count(PartitionMetaList, all_partitions) ->
+limit_partitions_count(PartitionMetaList, _) ->
   PartitionMetaList.
 
 %% This function ensures each Topic-Partition pair has a connection record
