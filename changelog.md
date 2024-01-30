@@ -1,4 +1,4 @@
-* 1.10.0
+* 1.10.1
   - Add `max_partitions` producer config to limit the number of partition producers so the client side is also possible to have control over resource utilization.
 
 * 1.9.1
