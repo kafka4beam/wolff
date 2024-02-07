@@ -48,6 +48,7 @@
 -export_type([client_id/0, host/0, producers/0, msg/0, ack_fun/0, partitioner/0,
               name/0, offset_reply/0, topic/0]).
 
+-deprecated({check_if_topic_exists, 3}).
 -deprecated({stop_and_delete_supervised_producers, 3}).
 
 -type client_id() :: binary().
@@ -158,7 +159,7 @@ check_connectivity(ClientId) ->
 check_connectivity(Hosts, ConnConfig) ->
    wolff_client:check_connectivity(Hosts, ConnConfig).
 
-%% @doc Check if the cluster is reachable and the topic is created.
+%% @hidden Deprecated. Check if the cluster is reachable and the topic is created.
 -spec check_if_topic_exists([host()], wolff_client:config(), topic()) ->
         ok | {error, unknown_topic_or_partition | [#{host := binary(), reason := term()}] | any()}.
 check_if_topic_exists(Hosts, ConnConfig, Topic) ->

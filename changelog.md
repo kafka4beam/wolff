@@ -1,3 +1,8 @@
+* 1.10.2 (merge 1.5.13)
+  - Use long-lived metadata connection.
+    This is to avoid having to excessively re-establish connection when there are many concurrent connectivity checks.
+  - Fix connection error reason translation, the error log is now more compact when e.g. connect timeout happens.
+
 * 1.10.1
   - Add `max_partitions` producer config to limit the number of partition producers so the client side is also possible to have control over resource utilization.
 
