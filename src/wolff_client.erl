@@ -32,7 +32,7 @@
 
 -export_type([config/0]).
 
--deprecated({check_if_topic_exists, 3}).
+%% deprecated
 -export([check_if_topic_exists/3]).
 
 -type config() :: map().
