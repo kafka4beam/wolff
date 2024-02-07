@@ -1,3 +1,8 @@
+* 1.5.13
+  - Use long-lived metadata connection.
+    This is to avoid having to excessively re-establish connection when there are many concurrent connectivity checks.
+* 1.5.12
+  - Fix connection error reason translation, the error log is now more compact when e.g. connect timeout happens.
 * 1.5.11
   - Fixed a try catch pattern in `gen_server` call towards client process, this should prevent `wolff_producers` from crash if `wolff_client` is killed during initialization.
 * 1.5.10

@@ -33,6 +33,42 @@ ack_cb(Partition, Offset, Self, Ref) ->
   Self ! {ack, Ref, Partition, Offset},
   ok.
 
+metadata_connection_restart_test() ->
+  ClientCfg = client_config(),
+  ClientId = <<"client-1">>,
+  {ok, Client} = start_client(ClientId, ?HOSTS, ClientCfg),
+  GetMetadataConn = fun() ->
+    ok = wolff:check_connectivity(ClientId),
+    ok = wolff_client:check_connectivity(Client),
+    State = sys:get_state(Client),
+    Pid = maps:get(metadata_conn, State),
+    ?assert(is_process_alive(Pid)),
+    Pid
+  end,
+  Pid1 = GetMetadataConn(),
+  exit(Pid1, kill),
+  Pid2 = GetMetadataConn(),
+  ok = stop_client(Client),
+  ?assertNot(is_process_alive(Pid2)).
+
+metadata_connection_restart2_test() ->
+  ClientCfg0 = client_config(),
+  ClientCfg = ClientCfg0#{min_metadata_refresh_interval => 0},
+  ClientId = <<"client-1">>,
+  {ok, Client} = start_client(ClientId, ?HOSTS, ClientCfg),
+  GetMetadataConn = fun() ->
+    ?assertMatch({ok, _}, wolff_client:get_leader_connections(Client, <<"test-topic">>)),
+    State = sys:get_state(Client),
+    Pid = maps:get(metadata_conn, State),
+    ?assert(is_process_alive(Pid)),
+    Pid
+  end,
+  Pid1 = GetMetadataConn(),
+  exit(Pid1, kill),
+  Pid2 = GetMetadataConn(),
+  ok = stop_client(Client),
+  ?assertNot(is_process_alive(Pid2)).
+
 send_test() ->
   ClientCfg = client_config(),
   {ok, Client} = start_client(<<"client-1">>, ?HOSTS, ClientCfg),
