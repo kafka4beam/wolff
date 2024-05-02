@@ -1,3 +1,6 @@
+* 1.10.3
+  - Fixed typespec for `wolff_client:get_leader_connections/3`.
+
 * 1.10.2 (merge 1.5.13)
   - Use long-lived metadata connection.
     This is to avoid having to excessively re-establish connection when there are many concurrent connectivity checks.
