@@ -99,7 +99,7 @@ get_id(Pid) ->
 get_leader_connections(Client, Topic) ->
    safe_call(Client, {get_leader_connections, Topic, all_partitions}).
 
--spec get_leader_connections(pid(), topic(), pos_integer()) ->
+-spec get_leader_connections(pid(), topic(), all_partitions | pos_integer()) ->
         {ok, [{partition(), pid() | ?conn_down(_)}]} | {error, any()}.
 get_leader_connections(Client, Topic, MaxPartitions) ->
    safe_call(Client, {get_leader_connections, Topic, MaxPartitions}).
