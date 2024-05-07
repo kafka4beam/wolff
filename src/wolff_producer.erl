@@ -451,7 +451,9 @@ send_to_kafka(#{sent_reqs := Sent,
   NewSent = #{request => Req,
               q_ack_ref => QAckRef,
               calls => Calls,
-              attempts => 1},
+              attempts => 1,
+              batch_size => length(FlatBatch)
+             },
   St2 = St1#{sent_reqs := queue:in(NewSent, Sent),
              sent_reqs_count := NewSentReqsCount,
              inflight_calls := NewInflightCalls
@@ -518,7 +520,9 @@ handle_kafka_ack(#kpro_rsp{api = produce,
   case queue:peek(SentReqs) of
       {value, #{request := #kpro_req{ref = Ref},
                 calls := Calls,
-                attempts := Attempts}} ->
+                attempts := Attempts,
+                batch_size := BatchSize
+               }} ->
           case ErrorCode =:= ?no_error of
               true ->
                   do_handle_kafka_ack(BaseOffset, St);
@@ -530,7 +534,10 @@ handle_kafka_ack(#kpro_rsp{api = produce,
                   inc_sent_failed(Config, length(Calls), AttemptedBefore),
                   log_warn(Topic, Partition,
                            "error_in_produce_response",
-                           #{error_code => ErrorCode}),
+                           #{error_code => ErrorCode,
+                             batch_size => BatchSize,
+                             attempts => Attempts
+                            }),
                   erlang:throw(ErrorCode)
           end;
       _ ->

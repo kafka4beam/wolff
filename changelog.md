@@ -1,3 +1,6 @@
+* 1.10.4
+  - Log produce failure warning message with number of attempts and batch size.
+
 * 1.10.3
   - Fixed typespec for `wolff_client:get_leader_connections/3`.
 
