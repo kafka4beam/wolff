@@ -141,7 +141,7 @@ pick_producer(#{workers := Workers,
 
 do_pick_producer(Partitioner, Partition0, Count, Workers) ->
   Pid0 = lookup_producer(Workers, Partition0),
-  case is_pid(Pid0) andalso is_process_alive(Pid0) of
+  case is_alive(Pid0) of
     true -> {Partition0, Pid0};
     false when Partitioner =:= random ->
       pick_next_alive(Workers, Partition0, Count);
@@ -150,7 +150,7 @@ do_pick_producer(Partitioner, Partition0, Count, Workers) ->
       _ = put(wolff_roundrobin, (Partition1 + 1) rem Count),
       R;
     false ->
-      erlang:error({producer_down, Pid0})
+      erlang:error({producer_down, {Workers, Partition0}})
   end.
 
 pick_next_alive(Workers, Partition, Count) ->
@@ -172,8 +172,17 @@ lookup_producer(#{workers := Workers}, Partition) ->
 lookup_producer(Workers, Partition) when is_map(Workers) ->
   maps:get(Partition, Workers);
 lookup_producer(Workers, Partition) ->
-  [{Partition, Pid}] = ets:lookup(Workers, Partition),
-  Pid.
+  try
+    case ets:lookup(Workers, Partition) of
+      [] ->
+        erlang:error({bad_produer, {Workers, Partition}});
+      [{Partition, Pid}] ->
+        Pid
+    end
+  catch
+    error:badarg ->
+      erlang:error({producer_down, {Workers, Partition}})
+  end.
 
 pick_partition(_Count, Partition, _) when is_integer(Partition) ->
   Partition;
