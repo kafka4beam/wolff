@@ -64,6 +64,7 @@
 -define(no_timer, no_timer).
 -define(reconnect, reconnect).
 -define(sent_req(Req, Q_AckRef, Calls), {Req, Q_AckRef, Calls}).
+-define(sent_req2(Ref, Batch, Q_AckRef, Calls), {Ref, Batch, Q_AckRef, Calls}).
 -define(linger_expire, linger_expire).
 -define(linger_expire_timer, linger_expire_timer).
 -define(DEFAULT_REPLAYQ_SEG_BYTES, 10 * 1024 * 1024).
@@ -306,13 +307,35 @@ use_defaults(Config, [{K, V} | Rest]) ->
     false -> use_defaults(Config#{K => V}, Rest)
   end.
 
+remake_request(?sent_req(Req0, Q_AckRef, Calls), _St) ->
+  %% For old version requets (kept only for hot-upgrade)
+  %% just make a new reference
+  Req = Req0#kpro_req{ref = make_ref()},
+  {Req, ?sent_req(Req, Q_AckRef, Calls)};
+remake_request(?sent_req2(_OldRef, Batch, Q_AckRef, Calls), St) ->
+  #kpro_req{ref = Ref2} = Req = make_request(Batch, St),
+  {Req, ?sent_req2(Ref2, Batch, Q_AckRef, Calls)}.
+
+make_request(Batch,
+             #{config := #{required_acks := RequiredAcks,
+                           ack_timeout := AckTimeout,
+                           compression := Compression
+                          },
+               produce_api_vsn := Vsn,
+               topic := Topic,
+               partition := Partition}) ->
+  kpro_req_lib:produce(Vsn, Topic, Partition, Batch,
+                       #{ack_timeout => AckTimeout,
+                         required_acks => RequiredAcks,
+                         compression => Compression
+                        }).
+
 resend_sent_reqs(#{sent_reqs := SentReqs,
                    conn := Conn
                   } = St) ->
-  F = fun(?sent_req(Req0, Q_AckRef, Calls), Acc) ->
-          Req = Req0#kpro_req{ref = make_ref()}, %% make a new reference
+  F = fun(Sent, Acc) ->
+          {Req, NewSent} = remake_request(Sent, St),
           ok = request_async(Conn, Req),
-          NewSent = ?sent_req(Req, Q_AckRef, Calls),
           [NewSent | Acc]
       end,
   NewSentReqs = lists:foldl(F, [], queue:to_list(SentReqs)),
@@ -361,15 +384,8 @@ maybe_send_to_kafka_now(#{?linger_expire_timer := LTimer,
 send_to_kafka(#{sent_reqs := Sent,
                 sent_reqs_count := SentCount,
                 replayq := Q,
-                config := #{max_batch_bytes := BytesLimit,
-                            required_acks := RequiredAcks,
-                            ack_timeout := AckTimeout,
-                            compression := Compression
-                           },
+                config := #{max_batch_bytes := BytesLimit},
                 conn := Conn,
-                produce_api_vsn := Vsn,
-                topic := Topic,
-                partition := Partition,
                 ?linger_expire_timer := LTimer
                } = St0) ->
   %% timer might have already expired, but should do no harm
@@ -378,25 +394,21 @@ send_to_kafka(#{sent_reqs := Sent,
     replayq:pop(Q, #{bytes_limit => BytesLimit, count_limit => 999999999}),
   {FlatBatch, Calls} = get_flat_batch(Items, [], []),
   [_ | _] = FlatBatch, %% assert
-  Req = kpro_req_lib:produce(Vsn, Topic, Partition, FlatBatch,
-                             #{ack_timeout => AckTimeout,
-                               required_acks => RequiredAcks,
-                               compression => Compression
-                              }),
+  #kpro_req{ref = Ref, no_ack = NoAck} = Req = make_request(FlatBatch, St0),
   St1 = St0#{replayq := NewQ, ?linger_expire_timer := false},
-  NewSent = ?sent_req(Req, QAckRef, Calls),
+  NewSent = ?sent_req2(Ref, FlatBatch, QAckRef, Calls),
   St2 = St1#{sent_reqs := queue:in(NewSent, Sent),
              sent_reqs_count := SentCount + 1
             },
   ok = request_async(Conn, Req),
   ok = send_stats(St2, FlatBatch),
-  St3 = maybe_fake_kafka_ack(Req, St2),
+  St3 = maybe_fake_kafka_ack(NoAck, Ref, St2),
   maybe_send_to_kafka(St3).
 
 %% when require no acks do not add to sent_reqs and ack caller immediately
-maybe_fake_kafka_ack(#kpro_req{no_ack = true, ref = Ref}, St) ->
+maybe_fake_kafka_ack(_NoAck = true, Ref, St) ->
   do_handle_kafka_ack(Ref, ?UNKNOWN_OFFSET, St);
-maybe_fake_kafka_ack(_Req, St) -> St.
+maybe_fake_kafka_ack(_NoAck, _Ref, St) -> St.
 
 is_send_ahead_allowed(#{config := #{max_send_ahead := Max},
                         sent_reqs_count := SentCount}) ->
@@ -446,34 +458,40 @@ handle_kafka_ack(#kpro_rsp{api = produce,
   [PartitionRsp] = kpro:find(partition_responses, TopicRsp),
   ErrorCode = kpro:find(error_code, PartitionRsp),
   BaseOffset = kpro:find(base_offset, PartitionRsp),
-  case ErrorCode =:= ?no_error of
-    true ->
+  case ErrorCode of
+    ?no_error ->
       do_handle_kafka_ack(Ref, BaseOffset, St);
-    false ->
+    _ ->
       #{topic := Topic, partition := Partition} = St,
       log_warn(Topic, Partition, "Produce response error-code = ~0p", [ErrorCode]),
       erlang:throw(ErrorCode)
   end.
 
-do_handle_kafka_ack(Ref, BaseOffset,
-                    #{sent_reqs := SentReqs,
-                      sent_reqs_count := SentReqsCount,
-                      pending_acks := PendingAcks,
-                      replayq := Q
-                     } = St) ->
+do_handle_kafka_ack(Ref, BaseOffset, #{sent_reqs := SentReqs} = St) ->
   case queue:peek(SentReqs) of
     {value, ?sent_req(#kpro_req{ref = Ref}, Q_AckRef, Calls)} ->
-      ok = replayq:ack(Q, Q_AckRef),
-      {{value, _}, NewSentReqs} = queue:out(SentReqs),
-      NewPendingAcks = evaluate_pending_ack_funs(PendingAcks, Calls, BaseOffset),
-      St#{sent_reqs := NewSentReqs,
-          sent_reqs_count := SentReqsCount - 1,
-          pending_acks := NewPendingAcks
-         };
+      %% this clause is kept only to be hot-upgrade safe
+      dereference_sent_and_ack_callers(Q_AckRef, Calls, BaseOffset, St);
+    {value, ?sent_req2(Ref, _Batch, Q_AckRef, Calls)} ->
+      dereference_sent_and_ack_callers(Q_AckRef, Calls, BaseOffset, St);
     _ ->
       %% stale ack
       St
   end.
+
+dereference_sent_and_ack_callers(Q_AckRef, Calls, BaseOffset, St) ->
+  #{sent_reqs := SentReqs,
+    sent_reqs_count := SentReqsCount,
+    pending_acks := PendingAcks,
+    replayq := Q
+  } = St,
+  ok = replayq:ack(Q, Q_AckRef),
+  {{value, _}, NewSentReqs} = queue:out(SentReqs),
+  NewPendingAcks = evaluate_pending_ack_funs(PendingAcks, Calls, BaseOffset),
+  St#{sent_reqs := NewSentReqs,
+      sent_reqs_count := SentReqsCount - 1,
+      pending_acks := NewPendingAcks
+  }.
 
 %% @private This function is called in below scenarios
 %% * Failed to connect any of the brokers
