@@ -57,7 +57,7 @@
 -type partition() :: kpro:partition().
 -type name() :: atom() | binary().
 -type offset() :: kpro:offset().
--type offset_reply() :: offset() | buffer_overflow_discarded.
+-type offset_reply() :: offset() | buffer_overflow_discarded | message_too_large.
 -type producers_cfg() :: wolff_producers:config().
 -type producers() :: wolff_producers:producers().
 -type partitioner() :: wolff_producers:partitioner().
@@ -135,6 +135,8 @@ send(Producers, Batch, AckFun) ->
 %%       the returned offset will always be `?UNKNOWN_OFFSET' (`-1').
 %%       In case the batch is discarded due to buffer overflow, the offset
 %%       is `buffer_overflow_discarded'.
+%%       In case a single message is too large (Kafka topic config max.message.bytes)
+%%       the offset is `message_too_large'.
 -spec send_sync(producers(), [msg()], timeout()) -> {partition(), offset_reply()}.
 send_sync(Producers, Batch, Timeout) ->
   {_Partition, ProducerPid} = wolff_producers:pick_producer(Producers, Batch),
