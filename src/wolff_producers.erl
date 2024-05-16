@@ -24,7 +24,7 @@
 %% gen_server callbacks
 -export([code_change/3, handle_call/3, handle_cast/2, handle_info/2, init/1, terminate/2]).
 
--export_type([producers/0, config/0]).
+-export_type([producers/0, config/0, partitioner/0]).
 
 -include("wolff.hrl").
 
@@ -175,7 +175,7 @@ lookup_producer(Workers, Partition) ->
   try
     case ets:lookup(Workers, Partition) of
       [] ->
-        erlang:error({bad_produer, {Workers, Partition}});
+        erlang:error({bad_producer, {Workers, Partition}});
       [{Partition, Pid}] ->
         Pid
     end

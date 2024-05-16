@@ -29,6 +29,17 @@
 -define(MAX_BATCH_BYTES,
         (?WOLFF_KAFKA_DEFAULT_MAX_MESSAGE_BYTES - ?BATCHING_OVERHEAD)).
 
+-define(WAIT(TIMEOUT, RECEIVE, THEN),
+        receive
+          RECEIVE ->
+            THEN;
+          UNEXPECTEDMSG ->
+            error({unexpected, UNEXPECTEDMSG})
+        after
+          TIMEOUT ->
+            error(timeout)
+        end).
+
 ack_cb(Partition, Offset, Self, Ref) ->
   Self ! {ack, Ref, Partition, Offset},
   ok.
@@ -79,16 +90,9 @@ send_test() ->
   Self = self(),
   AckFun = {fun ?MODULE:ack_cb/4, [Self, Ref]},
   _ = wolff:send(Producers, [Msg], AckFun),
-  receive
-    {ack, Ref, Partition, BaseOffset} ->
-      io:format(user, "\nmessage produced to partition ~p at offset ~p\n",
-                [Partition, BaseOffset]);
-    Msg ->
-      erlang:error({unexpected, Msg})
-  after
-    5000 ->
-      erlang:error(timeout)
-  end,
+  ?WAIT(5000, {ack, Ref, Partition, BaseOffset},
+        io:format(user, "\nmessage produced to partition ~p at offset ~p\n",
+                  [Partition, BaseOffset])),
   ok = wolff:stop_producers(Producers),
   ok = stop_client(Client).
 
@@ -113,16 +117,9 @@ send_one_msg_max_batch_test() ->
   Self = self(),
   AckFun = fun(Partition, Offset) -> Self ! {ack, Ref, Partition, Offset}, ok end,
   _ = wolff:send(Producers, [Msg], AckFun),
-  receive
-    {ack, Ref, Partition, BaseOffset} ->
-      io:format(user, "\nmessage produced to partition ~p at offset ~p\n",
-                [Partition, BaseOffset]);
-    Msg ->
-      erlang:error({unexpected, Msg})
-  after
-    5000 ->
-      erlang:error(timeout)
-  end,
+  ?WAIT(5000, {ack, Ref, Partition, BaseOffset},
+        io:format(user, "\nmessage produced to partition ~p at offset ~p\n",
+                  [Partition, BaseOffset])),
   ok = wolff:stop_producers(Producers),
   ok = stop_client(Client).
 
@@ -145,16 +142,9 @@ send_smallest_msg_max_batch_test() ->
   Self = self(),
   AckFun = fun(Partition, Offset) -> Self ! {ack, Ref, Partition, Offset}, ok end,
   _ = wolff:send(Producers, Batch, AckFun),
-  receive
-    {ack, Ref, Partition, BaseOffset} ->
-      io:format(user, "\nmessage produced to partition ~p at offset ~p\n",
-                [Partition, BaseOffset]);
-    Msg ->
-      erlang:error({unexpected, Msg})
-  after
-    5000 ->
-      erlang:error(timeout)
-  end,
+  ?WAIT(5000, {ack, Ref, Partition, BaseOffset},
+       io:format(user, "\nmessage produced to partition ~p at offset ~p\n",
+                 [Partition, BaseOffset])),
   ok = wolff:stop_producers(Producers),
   ok = stop_client(Client).
 
@@ -171,7 +161,7 @@ send_sync_test() ->
   ok = stop_client(Client).
 
 connection_restart_test_() ->
- {timeout, 10, fun() -> test_connection_restart() end}.
+  {timeout, 10, fun() -> test_connection_restart() end}.
 
 test_connection_restart() ->
   ClientCfg0 = client_config(),
@@ -192,17 +182,9 @@ test_connection_restart() ->
   Producer = wolff:get_producer(Producers, 0),
   #{conn := Conn} = sys:get_state(Producer),
   erlang:exit(Conn, kill),
-  receive
-    {ack, Ref, Partition, BaseOffset} ->
+  ?WAIT(5000, {ack, Ref, Partition, BaseOffset},
       io:format(user, "\nmessage produced to partition ~p at offset ~p\n",
-                [Partition, BaseOffset]);
-    Msg ->
-      erlang:error({unexpected, Msg})
-  after
-    8000 ->
-      io:format(user, "~p\n", [sys:get_state(Producer)]),
-      erlang:error(timeout)
-  end,
+                [Partition, BaseOffset])),
   ok = wolff:stop_producers(Producers),
   ok = stop_client(Client).
 
@@ -433,16 +415,12 @@ leader_restart_test_() ->
    fun() -> test_leader_restart() end}.
 
 test_leader_restart() ->
-  %% do not include - or _ in topic name
   Topic = "testtopic" ++ integer_to_list(abs(erlang:monotonic_time())),
   %% number of partitions should be greater than number of Kafka brokers
   Partitions = 5,
   %% replication factor has to be 1 to trigger leader_not_available error code
   ReplicationFactor = 1,
-  ok = create_topic(Topic, Partitions, ReplicationFactor),
-  try
-    _ = application:stop(wolff), %% ensure stopped
-    {ok, _} = application:ensure_all_started(wolff),
+  with_topic(Topic, Partitions, ReplicationFactor, default_max_message_bytes, fun() ->
     ClientCfg = client_config(),
     ClientIdA = iolist_to_binary("ca-" ++ Topic),
     ClientIdB = iolist_to_binary("cb-" ++ Topic),
@@ -460,10 +438,91 @@ test_leader_restart() ->
     ?assert(length(LeadersB0) =:= length(LeadersB1)),
     ok = wolff_client:stop(ClientA),
     ok = wolff_client:stop(ClientB)
+  end).
+
+with_topic(Topic, Partitions, ReplicationFactor, MaxMessageBytes, TestFunc) ->
+  ok = create_topic(Topic, Partitions, ReplicationFactor, MaxMessageBytes),
+  try
+    _ = application:stop(wolff), %% ensure stopped
+    {ok, _} = application:ensure_all_started(wolff),
+    TestFunc()
   after
     ok = delete_topic(Topic)
-  end,
-  ok.
+  end.
+
+
+message_too_large_test_() ->
+  {timeout, 60,
+   fun() -> test_message_too_large() end}.
+
+test_message_too_large() ->
+  Topic = "message-too-large-" ++ integer_to_list(abs(erlang:monotonic_time())),
+  Partitions = 1,
+  ReplicationFactor = 1,
+  MaxMessageBytes = 100,
+  with_topic(Topic, Partitions, ReplicationFactor, MaxMessageBytes, fun() ->
+    ClientCfg = client_config(),
+    ClientId = iolist_to_binary("client-" ++ Topic),
+    {ok, Client} = start_client(ClientId, ?HOSTS, ClientCfg#{connection_strategy => per_partition}),
+    TopicBin = iolist_to_binary(Topic),
+    %% try to batch more messages than Kafka's limit,
+    %% the producer will get message_too_large error back
+    %% then it should retry sending one message at a time
+    ProducerCfg = #{partitioner => fun(_, _) -> 0 end, max_batch_bytes => MaxMessageBytes * 3},
+    {ok, Producers} = wolff:start_producers(Client, TopicBin, ProducerCfg),
+    MaxBytesCompensateOverhead = MaxMessageBytes - ?BATCHING_OVERHEAD - 7,
+    Msg = fun(C) -> #{key => <<>>, value => iolist_to_binary(lists:duplicate(MaxBytesCompensateOverhead, C))} end,
+    SendFunc = fun(Batch) ->
+      Ref = make_ref(),
+      Self = self(),
+      AckFun = {fun ?MODULE:ack_cb/4, [Self, Ref]},
+      _ = wolff:send(Producers, Batch, AckFun),
+      ?WAIT(5000, {ack, Ref, _Partition, BaseOffset}, BaseOffset)
+    end,
+    %% Must be ok to send one message
+    ?assertEqual(0, SendFunc([Msg($0)])),
+    %% Three messages in one batch is over the limit, but the producer
+    %% should split the batch.
+    %% assert base offset is the offset for the first message in the batch (1)
+    %% but not the last (3)
+    ?assertEqual(1, SendFunc([Msg($a), Msg($b), Msg($c)])),
+    %% send a too-large single message, producer is forced to drop it
+    ?assertEqual(message_too_large, SendFunc([Msg(<<"0123456789">>)])),
+    ok = wolff:stop_producers(Producers),
+    ok = stop_client(Client),
+    ok = application:stop(wolff)
+  end).
+
+one_byte_limit_test() ->
+  Topic = "one-byte-limit-" ++ integer_to_list(abs(erlang:monotonic_time())),
+  Partitions = 1,
+  ReplicationFactor = 1,
+  with_topic(Topic, Partitions, ReplicationFactor, _MessageSizeLimit = 1, fun() ->
+    ClientCfg = client_config(),
+    ClientId = iolist_to_binary("client-" ++ Topic),
+    {ok, Client} = start_client(ClientId, ?HOSTS, ClientCfg#{connection_strategy => per_partition}),
+    TopicBin = iolist_to_binary(Topic),
+    %% try to batch more messages than Kafka's limit,
+    %% the producer will get message_too_large error back
+    %% then it should retry sending one message at a time
+    ProducerCfg = #{partitioner => fun(_, _) -> 0 end, max_batch_bytes => 1},
+    {ok, Producers} = wolff:start_producers(Client, TopicBin, ProducerCfg),
+    SendFunc = fun(Batch) ->
+      Ref = make_ref(),
+      Self = self(),
+      AckFun = {fun ?MODULE:ack_cb/4, [Self, Ref]},
+      _ = wolff:send(Producers, Batch, AckFun),
+      ?WAIT(5000, {ack, Ref, _Partition, BaseOffset}, BaseOffset)
+    end,
+    %% send batch of two one-byte messages, producer should not enter
+    %% a dead-loop of repeating NewMax = (1+1) div 2
+    Msg = #{key => <<>>, value => <<0>>},
+    Batch = [Msg, Msg],
+    ?assertEqual(message_too_large, SendFunc(Batch)),
+    ok = wolff:stop_producers(Producers),
+    ok = stop_client(Client),
+    ok = application:stop(wolff)
+  end).
 
 %% wolff_client died by the time when wolff_producers tries to initialize producers
 %% it should not cause the wolff_producers_sup to restart
@@ -543,8 +602,8 @@ encoded_bytes(Batch) ->
   Encoded = kpro_batch:encode(2, Batch, no_compression),
   iolist_size(Encoded).
 
-create_topic(Topic, Partitions, ReplicationFactor) ->
-  Cmd = create_topic_cmd(Topic, Partitions, ReplicationFactor),
+create_topic(Topic, Partitions, ReplicationFactor, MaxMessageBytes) ->
+  Cmd = create_topic_cmd(Topic, Partitions, ReplicationFactor, MaxMessageBytes),
   Result = os:cmd(Cmd),
   Expected = "Created topic " ++ Topic ++ ".\n",
   ?assertEqual(Expected, Result),
@@ -558,13 +617,19 @@ delete_topic(Topic) ->
     _ -> throw(Result)
   end.
 
-create_topic_cmd(Topic, Partitions, ReplicationFactor) ->
+create_topic_cmd(Topic, Partitions, ReplicationFactor, MaxMessageBytes) ->
   "docker exec wolff-kafka-1 /opt/kafka/bin/kafka-topics.sh" ++
   " --zookeeper zookeeper:2181" ++
   " --create" ++
   " --topic '" ++ Topic ++ "'" ++
   " --partitions " ++ integer_to_list(Partitions) ++
-  " --replication-factor " ++ integer_to_list(ReplicationFactor).
+  " --replication-factor " ++ integer_to_list(ReplicationFactor) ++
+  case is_integer(MaxMessageBytes) of
+    true ->
+      " --config max.message.bytes=" ++ integer_to_list(MaxMessageBytes);
+    false ->
+      ""
+  end.
 
 delete_topic_cmd(Topic) ->
   "docker exec wolff-kafka-1 /opt/kafka/bin/kafka-topics.sh" ++

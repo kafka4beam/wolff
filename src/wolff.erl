@@ -41,7 +41,7 @@
 -export([get_producer/2]).
 
 -export_type([client_id/0, host/0, producers/0, msg/0, ack_fun/0, partitioner/0,
-              name/0, offset_reply/0]).
+              name/0, offset_reply/0, topic/0]).
 
 -type client_id() :: binary().
 -type host() :: kpro:endpoint().
@@ -49,7 +49,7 @@
 -type partition() :: kpro:partition().
 -type name() :: atom().
 -type offset() :: kpro:offset().
--type offset_reply() :: offset() | buffer_overflow_discarded.
+-type offset_reply() :: offset() | buffer_overflow_discarded | message_too_large.
 -type producers_cfg() :: wolff_producers:config().
 -type producers() :: wolff_producers:producers().
 -type partitioner() :: wolff_producers:partitioner().
@@ -123,6 +123,8 @@ send(Producers, Batch, AckFun) ->
 %%       the returned offset will always be `?UNKNOWN_OFFSET' (`-1').
 %%       In case the batch is discarded due to buffer overflow, the offset
 %%       is `buffer_overflow_discarded'.
+%%       In case a single message is too large (Kafka topic config max.message.bytes)
+%%       the offset is `message_too_large'.
 -spec send_sync(producers(), [msg()], timeout()) -> {partition(), offset_reply()}.
 send_sync(Producers, Batch, Timeout) ->
   {_Partition, ProducerPid} = wolff_producers:pick_producer(Producers, Batch),
