@@ -493,6 +493,9 @@ test_message_too_large() ->
     ?assertEqual(1, Wait1()),
     ?assertEqual(2, Wait2()),
     ?assertEqual(3, Wait3()),
+    ProducerPid = wolff_producers:lookup_producer(Producers, 0),
+    %% assert producer lowered max_batch_bytes to half
+    ?assertMatch(#{config := #{max_batch_bytes := 150}}, sys:get_state(ProducerPid)),
     %% send a too-large single message, producer is forced to drop it
     ?assertEqual(message_too_large, (SendFunc([Msg(<<"0123456789">>)]))()),
     ok = wolff:stop_producers(Producers),

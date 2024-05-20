@@ -318,9 +318,7 @@ remake_requests(?sent_items(_OldRef, Items, Q_AckRef), St, ?reconnect) ->
   #kpro_req{ref = Ref} = Req = make_request(Items, St),
   {[Req], [?sent_items(Ref, Items, Q_AckRef)]};
 remake_requests(?sent_items(_OldRef, Items, Q_AckRef), St, ?message_too_large) ->
-  %% Batch is too large, try to produce one message at a time,
-  %% but not one queue-item at a time, because one queue-item may
-  %% include more than one message
+  %% Batch is too large, try to produce one queue-item at a time,
   Reqs = lists:map(fun(Item) -> make_request([Item], St) end, Items),
   {Reqs, make_sent_items_list(Items, Reqs, Q_AckRef)}.
 
