@@ -468,7 +468,11 @@ test_message_too_large() ->
     %% try to batch more messages than Kafka's limit,
     %% the producer will get message_too_large error back
     %% then it should retry sending one message at a time
-    ProducerCfg = #{partitioner => fun(_, _) -> 0 end, max_batch_bytes => MaxMessageBytes * 3},
+    ProducerCfg = #{partitioner => fun(_, _) -> 0 end,
+                    max_batch_bytes => MaxMessageBytes * 3,
+                    %% ensure batching
+                    max_linger_ms => 100
+                   },
     {ok, Producers} = wolff:start_producers(Client, TopicBin, ProducerCfg),
     MaxBytesCompensateOverhead = MaxMessageBytes - ?BATCHING_OVERHEAD - 7,
     Msg = fun(C) -> #{key => <<>>, value => iolist_to_binary(lists:duplicate(MaxBytesCompensateOverhead, C))} end,
@@ -477,17 +481,20 @@ test_message_too_large() ->
       Self = self(),
       AckFun = {fun ?MODULE:ack_cb/4, [Self, Ref]},
       _ = wolff:send(Producers, Batch, AckFun),
-      ?WAIT(5000, {ack, Ref, _Partition, BaseOffset}, BaseOffset)
+      fun() -> ?WAIT(5000, {ack, Ref, _Partition, BaseOffset}, BaseOffset) end
     end,
     %% Must be ok to send one message
-    ?assertEqual(0, SendFunc([Msg($0)])),
-    %% Three messages in one batch is over the limit, but the producer
-    %% should split the batch.
-    %% assert base offset is the offset for the first message in the batch (1)
-    %% but not the last (3)
-    ?assertEqual(1, SendFunc([Msg($a), Msg($b), Msg($c)])),
+    ?assertEqual(0, (SendFunc([Msg($0)]))()),
+    %% The following 3 calls will be collected into one batch
+    %% then split into 3 batches for retry.
+    Wait1 = SendFunc([Msg($a)]),
+    Wait2 = SendFunc([Msg($b)]),
+    Wait3 = SendFunc([Msg($c)]),
+    ?assertEqual(1, Wait1()),
+    ?assertEqual(2, Wait2()),
+    ?assertEqual(3, Wait3()),
     %% send a too-large single message, producer is forced to drop it
-    ?assertEqual(message_too_large, SendFunc([Msg(<<"0123456789">>)])),
+    ?assertEqual(message_too_large, (SendFunc([Msg(<<"0123456789">>)]))()),
     ok = wolff:stop_producers(Producers),
     ok = stop_client(Client),
     ok = application:stop(wolff)
