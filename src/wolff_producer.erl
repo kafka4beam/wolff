@@ -371,13 +371,9 @@ remake_requests(#{q_items := Items, attempts := Attempts} = Sent, St, ?reconnect
   #kpro_req{ref = Ref} = Req = make_request(Items, St),
   {[Req], [Sent#{req_ref := Ref, attempts := Attempts + 1}]};
 remake_requests(#{q_items := Items} = Sent, St, ?message_too_large) ->
-  %% Batch is too large, try to produce one message at a time,
-  %% but not one queue-item at a time, because one queue-item may
-  %% include more than one message
-  SplitItems = split_items(Items),
-  Reqs = lists:map(fun(Item) -> make_request([Item], St) end, SplitItems),
+  Reqs = lists:map(fun(Item) -> make_request([Item], St) end, Items),
   #{attempts := Attempts, q_ack_ref := Q_AckRef} = Sent,
-  {Reqs, make_sent_items_list(SplitItems, Reqs, Attempts + 1, Q_AckRef)}.
+  {Reqs, make_sent_items_list(Items, Reqs, Attempts + 1, Q_AckRef)}.
 
 %% only ack replayq when the last message is accepted by Kafka
 make_sent_items_list([LastItem], [#kpro_req{ref = Ref}], Attempts, Q_AckRef) ->
@@ -585,39 +581,30 @@ note(Fmt, Args) ->
 
 -spec do_handle_kafka_ack(_, _, sent(), state()) -> state().
 do_handle_kafka_ack(?no_error, BaseOffset, #{q_items := Items}, St) ->
-  %% in case this item is the last one in a split-batch
-  %% the real base offset of the whole batch is shifted by the original batch size
-  OffsetShift =
-    case Items of
-      [?Q_ITEM(_CallId, _Ts, [#{offset_shift := Shift}])] -> Shift;
-      _ -> 0
-    end,
-  clear_sent_and_ack_callers(?no_error, BaseOffset - OffsetShift, St);
+  clear_sent_and_ack_callers(?no_error, BaseOffset, St);
 do_handle_kafka_ack(?message_too_large = EC, _BaseOffset, Sent, St) ->
   #{topic := Topic, partition := Partition, config := Config} = St,
   #{q_items := Items} = Sent,
-  MsgCnt = count_msgs(Items),
-  case MsgCnt =:= 1 of
-    true ->
-      #kpro_req{msg = IoData} = make_request(Items, St),
-      Bytes = iolist_size(IoData),
+  #kpro_req{msg = IoData} = make_request(Items, St),
+  Bytes = iolist_size(IoData),
+  case length(Items) of
+    1 ->
       %% This is a single message batch, but it's still too large
-      Note = note("A message (encoded_bytes=~p) is dropped because it's too large for this topic! "
-                  "Consider increase 'max.message.bytes' config on the server side!", [Bytes]),
-      log_error(Topic, Partition, EC, #{note => Note}),
+      Note = "A single-request batch is dropped because it's too large for this topic! "
+             "Consider increasing 'max.message.bytes' config on the server side!",
+      log_error(Topic, Partition, EC, #{note => Note, encode_bytes => Bytes}),
       clear_sent_and_ack_callers(EC, EC, St);
-    false ->
-      %% This is a batch of more than one messages
+    N ->
+      %% This is a batch of more than one queue items (calls)
       %% Split the batch, and re-send
       #{max_batch_bytes := Max} = Config,
       NewMax = max(1, (Max + 1) div 2),
       St1 = St#{config := Config#{max_batch_bytes := NewMax}},
       Note = note("Config max_batch_bytes=~p is too large for this topic, "
-                  "trying to split the current batch (of ~p messages) "
-                  "into single-message batches and retry. "
+                  "trying to split the current batch and retry. "
                   "Will use max_batch_bytes=~p to collect future batches.",
-                  [Max, MsgCnt, NewMax]),
-      log_warn(Topic, Partition, EC, #{note => Note}),
+                  [Max, NewMax]),
+      log_warn(Topic, Partition, EC, #{note => Note, calls_count => N, encode_bytes => Bytes}),
       resend_sent_reqs(St1, EC)
   end;
 do_handle_kafka_ack(ErrorCode, _BaseOffset, Sent, St) ->
