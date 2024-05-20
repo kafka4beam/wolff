@@ -393,28 +393,6 @@ make_sent_items_list([Item | Items], [#kpro_req{ref = Ref} | Reqs], Attempts, Q_
      attempts => Attempts
     } | make_sent_items_list(Items, Reqs, Attempts, Q_AckRef)].
 
-%% Takes a list of queue-items, split it to a list of queue-items
-%% each contain only one message.
-%% In order to avoid duplicated acks towards callers,
-%% for each expanded item (which has a batch with more than one message)
-%% only the last one has the caller-id.
-split_items(Items) ->
-  split_items(Items, []).
-
-split_items([], Acc) ->
-  lists:reverse(Acc);
-split_items([?Q_ITEM(CallId, Ts, Batch) | Items], Acc) ->
-  NewItems = split_batch(CallId, Ts, Batch, 0),
-  split_items(Items, lists:reverse(NewItems, Acc)).
-
-%% Expand one queue-item for each message in the batch.
-%% Only associate the call-id with the last message in the batch
-split_batch(CallId, Ts, [LastMsg], OffsetShift) ->
-  [?Q_ITEM(CallId, Ts, [LastMsg#{offset_shift => OffsetShift}])];
-split_batch(CallId, Ts, [Msg | Batch], OffsetShift) ->
-  [?Q_ITEM(?no_caller_ack, Ts, [Msg])
-   | split_batch(CallId, Ts, Batch, OffsetShift + 1)].
-
 make_request(QueueItems,
              #{config := #{required_acks := RequiredAcks,
                            ack_timeout := AckTimeout,
