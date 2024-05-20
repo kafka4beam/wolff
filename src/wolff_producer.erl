@@ -317,11 +317,10 @@ remake_requests(?sent_req(Req0, Q_AckRef, Calls), _St, _Reason) ->
 remake_requests(?sent_items(_OldRef, Items, Q_AckRef), St, ?reconnect) ->
   #kpro_req{ref = Ref} = Req = make_request(Items, St),
   {[Req], [?sent_items(Ref, Items, Q_AckRef)]};
-remake_requests(?sent_items(_OldRef, Items0, Q_AckRef), St, ?message_too_large) ->
+remake_requests(?sent_items(_OldRef, Items, Q_AckRef), St, ?message_too_large) ->
   %% Batch is too large, try to produce one message at a time,
   %% but not one queue-item at a time, because one queue-item may
   %% include more than one message
-  Items = split_items(Items0),
   Reqs = lists:map(fun(Item) -> make_request([Item], St) end, Items),
   {Reqs, make_sent_items_list(Items, Reqs, Q_AckRef)}.
 
@@ -331,28 +330,6 @@ make_sent_items_list([LastItem], [#kpro_req{ref = Ref}], Q_AckRef) ->
 make_sent_items_list([Item | Items], [#kpro_req{ref = Ref} | Reqs], Q_AckRef) ->
   [?sent_items(Ref, [Item], ?no_queue_ack)
    | make_sent_items_list(Items, Reqs, Q_AckRef)].
-
-%% Takes a list of queue-items, split it to a list of queue-items
-%% each contain only one message.
-%% In order to avoid duplicated acks towards callers,
-%% for each expanded item (which has a batch with more than one message)
-%% only the last one has the caller-id.
-split_items(Items) ->
-  split_items(Items, []).
-
-split_items([], Acc) ->
-  lists:reverse(Acc);
-split_items([?Q_ITEM(CallId, Ts, Batch) | Items], Acc) ->
-  NewItems = split_batch(CallId, Ts, Batch, 0),
-  split_items(Items, lists:reverse(NewItems, Acc)).
-
-%% Expand one queue-item for each message in the batch.
-%% Only associate the call-id with the last message in the batch
-split_batch(CallId, Ts, [LastMsg], OffsetShift) ->
-  [?Q_ITEM(CallId, Ts, [LastMsg#{offset_shift => OffsetShift}])];
-split_batch(CallId, Ts, [Msg | Batch], OffsetShift) ->
-  [?Q_ITEM(?no_caller_ack, Ts, [Msg])
-   | split_batch(CallId, Ts, Batch, OffsetShift + 1)].
 
 make_request(QueueItems,
              #{config := #{required_acks := RequiredAcks,
@@ -522,12 +499,16 @@ do_handle_kafka_ack(Ref, BaseOffset, #{sent_reqs := SentReqs } = St, Reason) ->
       %% this clause is kept only to be hot-upgrade safe
       clear_sent_and_ack_callers(Q_AckRef, Calls, BaseOffset, St);
     {value, ?sent_items(Ref, Items, Q_AckRef)} when Reason =:= ?message_too_large ->
-      Batch = get_batch_from_queue_items(Items),
-      case length(Batch) of
-        1 ->
-          %% This is a single message batch, but it's still too large
+      case Items of
+        [?Q_ITEM(_CallId, _Ts, Batch)] ->
+          %% This is one call, but it's still too large
           #{topic := Topic, partition := Partition} = St,
-          log_error(Topic, Partition, "One message is dropped due to single-message batch is too large!", []),
+          #kpro_req{msg = IoData} = make_request(Items, St),
+          EncodedBytes = iolist_size(IoData),
+          log_error(Topic, Partition, "One request is dropped due to message_too_large! "
+                    "This single-request includes ~p message(s), and encoded to ~p bytes. "
+                    "Please consider increasing max.message.bytes on the server side!",
+                    [length(Batch), EncodedBytes]),
           Calls = get_calls_from_queue_items(Items),
           clear_sent_and_ack_callers(Q_AckRef, Calls, ?message_too_large, St);
         _ ->
@@ -545,15 +526,8 @@ do_handle_kafka_ack(Ref, BaseOffset, #{sent_reqs := SentReqs } = St, Reason) ->
           resend_sent_reqs(St1, ?message_too_large)
       end;
     {value, ?sent_items(Ref, Items, Q_AckRef)} ->
-      %% in case this item is the last one in a split-batch
-      %% the real base offset of the whole batch is shifted by the original batch size
-      OffsetShift =
-        case Items of
-          [?Q_ITEM(_CallId, _Ts, [#{offset_shift := Shift}])] -> Shift;
-          _ -> 0
-        end,
       Calls = get_calls_from_queue_items(Items),
-      clear_sent_and_ack_callers(Q_AckRef, Calls, BaseOffset - OffsetShift, St);
+      clear_sent_and_ack_callers(Q_AckRef, Calls, BaseOffset, St);
     _ ->
       %% stale or out of order ack
       St
