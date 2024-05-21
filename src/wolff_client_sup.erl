@@ -66,13 +66,12 @@ find_client(ClientID) ->
             [{ClientID, Pid}] ->
                 {ok, Pid};
             [] ->
-                {error, no_such_client}
+                {error, #{reason => no_such_client, client => ClientID}}
         end
     catch
         error : badarg ->
-            {error, client_supervisor_not_initialized}
+            {error, #{reason => client_supervisor_not_initialized, client => ClientID}}
     end.
-
 
 %% @private Make supervisor child spec.
 child_spec(ClientId, Hosts, Config) ->

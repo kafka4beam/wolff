@@ -1,3 +1,9 @@
+* 1.10.5 (merge 1.5.14)
+  - Split batch if `message_too_large` error code is received.
+    Prior to this fix, `wolff_producer` would retry the same batch indefinitely for any error code received from Kafka (`message_too_large` included).
+    After this fix, if `message_too_large` happens, `wolff_producer` splits the batch into single-call batches and retry.
+    It then ajdust the `max_batch_bytes` config to half of its original value for future batches.
+
 * 1.10.4
   - Log produce failure warning message with number of attempts and batch size.
 

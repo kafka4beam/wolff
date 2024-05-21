@@ -303,7 +303,7 @@ fail_retry_success_test() ->
   ClientCfg = client_config(),
   {ok, _ClientPid} = wolff:ensure_supervised_client(ClientId, ?HOSTS, ClientCfg),
   ProducerCfg0 = producer_config(?FUNCTION_NAME),
-  ProducerCfg = ProducerCfg0#{required_acks => all_isr},
+  ProducerCfg = ProducerCfg0#{required_acks => all_isr, reconnect_delay_ms => 10},
   {ok, Producers} = wolff:ensure_supervised_producers(ClientId, <<"test-topic">>, ProducerCfg),
   Msg = #{key => ?KEY, value => <<"value">>},
   Self = self(),

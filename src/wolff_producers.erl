@@ -170,11 +170,20 @@ pick_producer(#{partitioner := Partitioner,
     {ok, Pid} = find_producer_by_partition(ClientId, Topic, P),
     Pid
   end,
-  do_pick_producer(Partitioner, Partition, Count, LookupFn).
+  try
+    do_pick_producer(Partitioner, Partition, Count, LookupFn)
+  catch
+    throw:Reason ->
+      erlang:throw(#{reason => Reason,
+                     topic => Topic,
+                     partition => Partition,
+                     client => ClientId
+                    })
+  end.
 
 do_pick_producer(Partitioner, Partition0, Count, LookupFn) ->
   Pid0 = LookupFn(Partition0),
-  case is_pid(Pid0) andalso is_process_alive(Pid0) of
+  case is_alive(Pid0) of
     true -> {Partition0, Pid0};
     false when Partitioner =:= random ->
       pick_next_alive(LookupFn, Partition0, Count);
@@ -183,14 +192,14 @@ do_pick_producer(Partitioner, Partition0, Count, LookupFn) ->
       _ = put(wolff_roundrobin, (Partition1 + 1) rem Count),
       R;
     false ->
-      erlang:error({producer_down, Pid0})
+      throw(producer_down)
   end.
 
 pick_next_alive(LookupFn, Partition, Count) ->
   pick_next_alive(LookupFn, (Partition + 1) rem Count, Count, _Tried = 1).
 
 pick_next_alive(_LookupFn, _Partition, Count, Count) ->
-  erlang:error(all_producers_down);
+  throw(all_producers_down);
 pick_next_alive(LookupFn, Partition, Count, Tried) ->
   Pid = LookupFn(Partition),
   case is_alive(Pid) of
@@ -378,7 +387,10 @@ find_producer_by_partition(ClientId, Topic, Partition) when is_integer(Partition
     [{{_, _, _}, Pid}] ->
       {ok, Pid};
     [] ->
-      {error, not_found}
+      {error, #{reason => producer_not_found,
+                client => ClientId,
+                topic => Topic,
+                partition => Partition}}
   end.
 
 find_producers_by_client_topic(ClientId, Topic) ->
@@ -440,7 +452,7 @@ start_new_producers(#{client_id := ClientId,
         case find_producer_by_partition(ClientId, Topic, Partition) of
           {ok, _} ->
             {OldCnt + 1, NewAcc};
-          {error, not_found} ->
+          {error, #{reason := producer_not_found}} ->
             {OldCnt, [New | NewAcc]}
         end
       end,
