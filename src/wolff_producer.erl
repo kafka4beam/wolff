@@ -580,7 +580,7 @@ note(Fmt, Args) ->
   lists:flatten(io_lib:format(Fmt, Args)).
 
 -spec do_handle_kafka_ack(_, _, sent(), state()) -> state().
-do_handle_kafka_ack(?no_error, BaseOffset, #{q_items := Items}, St) ->
+do_handle_kafka_ack(?no_error, BaseOffset, _Sent, St) ->
   clear_sent_and_ack_callers(?no_error, BaseOffset, St);
 do_handle_kafka_ack(?message_too_large = EC, _BaseOffset, Sent, St) ->
   #{topic := Topic, partition := Partition, config := Config} = St,
@@ -593,6 +593,7 @@ do_handle_kafka_ack(?message_too_large = EC, _BaseOffset, Sent, St) ->
       Note = "A single-request batch is dropped because it's too large for this topic! "
              "Consider increasing 'max.message.bytes' config on the server side!",
       log_error(Topic, Partition, EC, #{note => Note, encode_bytes => Bytes}),
+      wolff_metrics:dropped_inc(Config, 1),
       clear_sent_and_ack_callers(EC, EC, St);
     N ->
       %% This is a batch of more than one queue items (calls)
