@@ -1,3 +1,6 @@
+* 1.10.6
+  - Added the `alias` producer config option to make producers to the same topic be independent.
+
 * 1.10.4 (merge 1.5.14)
   - Split batch if `message_too_large` error code is received.
     Prior to this fix, `wolff_producer` would retry the same batch indefinitely for any error code received from Kafka (`message_too_large` included).
