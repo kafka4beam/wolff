@@ -40,7 +40,7 @@
           topic := alias_and_topic()
          }.
 
--type producer_alias() :: term().
+-type producer_alias() :: binary().
 -type alias_and_topic() :: {producer_alias(), topic()}.
 -type topic() :: kpro:topic().
 -type topic_or_alias() :: topic() | alias_and_topic().
