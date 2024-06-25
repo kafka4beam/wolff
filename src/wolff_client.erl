@@ -353,7 +353,7 @@ ensure_leader_connections2(#{conn_config := ConnConfig,
     {ok, {ConnPid, {Brokers, PartitionMetaList}}} ->
       ensure_leader_connections3(St, TopicOrAlias, ConnPid, Brokers, PartitionMetaList, MaxPartitions);
     {error, Errors} ->
-      log_warn(failed_to_fetch_metadata, #{topic => get_topic(TopicOrAlias), errors => Errors}),
+      log_warn(failed_to_fetch_metadata, #{topic => get_topic(TopicOrAlias), alias => get_alias(TopicOrAlias), errors => Errors}),
       {error, failed_to_fetch_metadata}
   end.
 
@@ -613,6 +613,10 @@ bin(X) ->
 -spec get_topic(topic_or_alias()) -> topic().
 get_topic({_Alias, Topic}) -> Topic;
 get_topic(Topic) -> Topic.
+
+-spec get_alias(topic_or_alias()) -> producer_alias().
+get_alias({Alias, _Topic}) -> Alias;
+get_alias(_Topic) -> ?NO_ALIAS.
 
 -spec ensure_has_alias(topic_or_alias()) -> alias_and_topic().
 ensure_has_alias({Alias, Topic}) -> {Alias, Topic};

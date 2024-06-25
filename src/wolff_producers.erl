@@ -194,6 +194,7 @@ pick_producer(#{partitioner := Partitioner,
     throw:Reason ->
       erlang:throw(#{reason => Reason,
                      topic => get_topic(TopicOrAlias),
+                     alias => get_alias(TopicOrAlias),
                      partition => Partition,
                      client => ClientId
                     })
@@ -250,10 +251,8 @@ pick_partition(Count, first_key_dispatch, [#{key := Key} | _]) ->
 init({ClientId, Topic, Config}) ->
   erlang:process_flag(trap_exit, true),
   self() ! ?rediscover_client,
-  Alias = maps:get(alias, Config, ?NO_ALIAS),
   {ok, #{client_id => ClientId,
          client_pid => false,
-         alias => Alias,
          topic => Topic,
          config => Config,
          producers_status => ?not_initialized,
@@ -280,7 +279,8 @@ handle_info(?rediscover_client, #{client_id := ClientId,
       {noreply, St};
     {error, Reason} ->
       log_error("failed_to_discover_client",
-                #{reason => Reason, topic => get_topic(TopicOrAlias), client_id => ClientId}),
+                #{reason => Reason, topic => get_topic(TopicOrAlias),
+                  alias => get_alias(TopicOrAlias), client_id => ClientId}),
       {noreply, ensure_rediscover_client_timer(St1)}
   end;
 handle_info(?init_producers, St) ->
@@ -292,6 +292,7 @@ handle_info({'DOWN', _, process, Pid, Reason}, #{client_id := ClientId,
                                                 } = St) ->
   log_error("client_pid_down", #{client_id => ClientId,
                                  topic => get_topic(TopicOrAlias),
+                                 alias => get_alias(TopicOrAlias),
                                  client_pid => Pid,
                                  reason => Reason}),
   %% client down, try to discover it after a delay
@@ -314,7 +315,8 @@ handle_info({'EXIT', Pid, Reason},
           %% wolff_producer is not designed to crash & restart
           %% if this happens, it's likely a bug in wolff_producer module
           log_error("producer_down",
-                    #{topic => get_topic(TopicOrAlias), partition => Partition,
+                    #{topic => get_topic(TopicOrAlias), alias => get_alias(TopicOrAlias),
+                      partition => Partition,
                       partition_worker => Pid, reason => Reason}),
           ok = start_producer_and_insert_pid(ClientId, TopicOrAlias, Partition, Config);
         false ->
@@ -375,7 +377,7 @@ maybe_init_producers(#{producers_status := ?not_initialized,
       ok = insert_producers(ClientId, TopicOrAlias, Workers),
       St#{producers_status := ?initialized};
     {error, Reason} ->
-      log_error("failed_to_init_producers", #{topic => get_topic(TopicOrAlias), reason => Reason}),
+      log_error("failed_to_init_producers", #{topic => get_topic(TopicOrAlias), alias => get_alias(TopicOrAlias), reason => Reason}),
       erlang:send_after(?init_producers_delay, self(), ?init_producers),
       St
   end;
@@ -412,6 +414,7 @@ find_producer_by_partition(ClientId, TopicOrAlias0, Partition) when is_integer(P
       {error, #{reason => producer_not_found,
                 client => ClientId,
                 topic => get_topic(TopicOrAlias),
+                alias => get_alias(TopicOrAlias),
                 partition => Partition}}
   end.
 
@@ -465,7 +468,7 @@ refresh_partition_count(#{client_pid := Pid, topic := TopicOrAlias, config := Co
       start_new_producers(St, Connections);
     {error, Reason} ->
       log_warning("failed_to_refresh_partition_count_will_retry",
-                  #{topic => get_topic(TopicOrAlias), reason => Reason}),
+                  #{topic => get_topic(TopicOrAlias), alias => get_alias(TopicOrAlias), reason => Reason}),
       St
   end.
 
@@ -524,6 +527,10 @@ ensure_timer_cancelled(_) ->
 -spec get_topic(topic_or_alias()) -> topic().
 get_topic({_Alias, Topic}) -> Topic;
 get_topic(Topic) -> Topic.
+
+-spec get_alias(topic_or_alias()) -> producer_alias().
+get_alias({Alias, _Topic}) -> Alias;
+get_alias(_Topic) -> ?NO_ALIAS.
 
 -spec ensure_has_alias(topic_or_alias()) -> alias_and_topic().
 ensure_has_alias({Alias, Topic}) -> {Alias, Topic};
