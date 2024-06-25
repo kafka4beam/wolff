@@ -75,6 +75,52 @@ test_supervised_producers(Name) ->
   wolff_tests:deinstall_event_logging(?FUNCTION_NAME),
   ok.
 
+%% Checks that having different producers to the same kafka topic works.
+different_producers_same_topic_test() ->
+  _ = application:stop(wolff), %% ensure stopped
+  {ok, _} = application:ensure_all_started(wolff),
+  ClientId = <<"same-topic">>,
+  ClientCfg = client_config(),
+  {ok, _ClientPid} = wolff:ensure_supervised_client(ClientId, ?HOSTS, ClientCfg),
+  Topic = <<"test-topic">>,
+  ProducerName0 = <<"p0">>,
+  Alias0 = <<"a0">>,
+  ProducerCfg0 = (producer_config(ProducerName0))#{required_acks => all_isr, alias => Alias0},
+  {ok, Producers0} = wolff:ensure_supervised_producers(ClientId, Topic, ProducerCfg0),
+  ?assertEqual({ok, Producers0},
+               wolff:ensure_supervised_producers(ClientId, <<"test-topic">>, ProducerCfg0)),
+  ProducerName1 = <<"p1">>,
+  Alias1 = <<"a1">>,
+  ProducerCfg1 = (producer_config(ProducerName1))#{required_acks => all_isr, alias => Alias1},
+  {ok, Producers1} = wolff:ensure_supervised_producers(ClientId, Topic, ProducerCfg1),
+  ?assertEqual({ok, Producers0},
+               wolff:ensure_supervised_producers(ClientId, <<"test-topic">>, ProducerCfg0)),
+  %% We can send from each producer.
+  Msg = #{key => ?KEY, value => <<"value">>},
+  Self = self(),
+  AckFun = fun(_Partition, _BaseOffset) -> Self ! acked, ok end,
+  {_Partition0, _ProducerPid0} = wolff:send(Producers0, [Msg], AckFun),
+  receive acked -> ok end,
+  {_Partition1A, _ProducerPid1A} = wolff:send(Producers1, [Msg], AckFun),
+  receive acked -> ok end,
+  %% Each replayq dir should be namespaced by the alias.
+  #{replayq_dir := BaseDir} = ProducerCfg0,
+  {ok, Files} = file:list_dir(BaseDir),
+  ReplayQDirs = [File || File <- Files,
+                         filelib:is_dir(filename:join([BaseDir, File])),
+                         lists:member(list_to_binary(File), [Alias0, Alias1])],
+  ?assertMatch([_, _], ReplayQDirs, #{base_dir => Files}),
+  %% We now stop one of the producers.  The other should keep working.
+  ok = wolff:stop_and_delete_supervised_producers(Producers0),
+  %% Some time for `wolff_client:delete_producers_metadata' to be processed.
+  timer:sleep(100),
+  {_Partition1B, _ProducerPid1B} = wolff:send(Producers1, [Msg], AckFun),
+  receive acked -> ok end,
+  ok = wolff:stop_and_delete_supervised_producers(Producers1),
+  ok = wolff:stop_and_delete_supervised_client(ClientId),
+  ok = application:stop(wolff),
+  ok.
+
 client_restart_test() ->
   ClientId = <<"client-restart-test">>,
   Topic = <<"test-topic">>,

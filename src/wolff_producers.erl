@@ -28,7 +28,7 @@
 %% tests
 -export([find_producer_by_partition/3]).
 
--export_type([producers/0, config/0, partitioner/0, producer_alias/0, topic_or_alias/0, alias_and_topic/0]).
+-export_type([producers/0, config/0, partitioner/0, producer_alias/0, topic_or_alias/0, alias_and_topic/0, max_partitions/0]).
 
 -include("wolff.hrl").
 -include_lib("stdlib/include/ms_transform.hrl").
@@ -41,7 +41,7 @@
          }.
 
 -type producer_alias() :: binary().
--type alias_and_topic() :: {producer_alias(), topic()}.
+-type alias_and_topic() :: {producer_alias() | undefined, topic()}.
 -type topic() :: kpro:topic().
 -type topic_or_alias() :: topic() | alias_and_topic().
 -type partition() :: kpro:partition().
@@ -66,6 +66,8 @@
 -define(refresh_partition_count, refresh_partition_count).
 -define(partition_count_unavailable, -1).
 -define(all_partitions, all_partitions).
+
+-type max_partitions() :: pos_integer() | ?all_partitions.
 
 %% @doc Called by wolff_producers_sup to start wolff_producers process.
 start_link(ClientId, TopicOrAlias, Config) ->
@@ -100,7 +102,7 @@ start_linked_producers(ClientId, ClientPid, TopicOrAlias, ProducerCfg) ->
                end,
   case wolff_client:get_leader_connections(ClientPid, AliasTopic, MaxPartitions) of
     {ok, Connections} ->
-      Workers = start_link_producers(ClientId, TopicOrAlias, Connections, ProducerCfg),
+      Workers = start_link_producers(ClientId, AliasTopic, Connections, ProducerCfg),
       ok = put_partition_cnt(ClientId, AliasTopic, maps:size(Workers)),
       Partitioner = maps:get(partitioner, ProducerCfg, random),
       {ok, #{client_id => ClientId,
