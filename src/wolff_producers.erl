@@ -41,9 +41,9 @@
          }.
 
 -type producer_alias() :: binary().
--type alias_and_topic() :: {producer_alias() | undefined, topic()}.
+-type alias_and_topic() :: wolff_client:alias_and_topic().
 -type topic() :: kpro:topic().
--type topic_or_alias() :: topic() | alias_and_topic().
+-type topic_or_alias() :: wolff_client:topic_or_alias().
 -type partition() :: kpro:partition().
 -type config_key() :: name | partitioner | partition_count_refresh_interval_seconds |
                       alias | wolff_producer:config_key().
@@ -65,9 +65,8 @@
 -define(partition_count_refresh_interval_seconds, 300).
 -define(refresh_partition_count, refresh_partition_count).
 -define(partition_count_unavailable, -1).
--define(all_partitions, all_partitions).
 
--type max_partitions() :: pos_integer() | ?all_partitions.
+-type max_partitions() :: wolff_client:max_partitions().
 
 %% @doc Called by wolff_producers_sup to start wolff_producers process.
 start_link(ClientId, TopicOrAlias, Config) ->
@@ -97,7 +96,7 @@ start_linked_producers(ClientId, ClientPid, TopicOrAlias, ProducerCfg) ->
                    {_Alias, _Topic} ->
                        TopicOrAlias;
                    Topic0 ->
-                       Alias = maps:get(alias, ProducerCfg, undefined),
+                       Alias = maps:get(alias, ProducerCfg, ?NO_ALIAS),
                        {Alias, Topic0}
                end,
   case wolff_client:get_leader_connections(ClientPid, AliasTopic, MaxPartitions) of
@@ -129,12 +128,12 @@ start_supervised(ClientId, Topic, ProducerCfg) ->
         ?not_initialized ->
           %% This means wolff_client failed to fetch metadata
           %% for this topic.
-          Alias = maps:get(alias, ProducerCfg, undefined),
+          Alias = maps:get(alias, ProducerCfg, ?NO_ALIAS),
           AliasTopic = {Alias, Topic},
           _ = wolff_producers_sup:ensure_absence(ClientId, AliasTopic),
           {error, failed_to_initialize_producers_in_time};
         _ ->
-          Alias = maps:get(alias, ProducerCfg, undefined),
+          Alias = maps:get(alias, ProducerCfg, ?NO_ALIAS),
           AliasTopic = {Alias, Topic},
           {ok, #{client_id => ClientId,
                  topic => AliasTopic,
@@ -251,7 +250,7 @@ pick_partition(Count, first_key_dispatch, [#{key := Key} | _]) ->
 init({ClientId, Topic, Config}) ->
   erlang:process_flag(trap_exit, true),
   self() ! ?rediscover_client,
-  Alias = maps:get(alias, Config, undefined),
+  Alias = maps:get(alias, Config, ?NO_ALIAS),
   {ok, #{client_id => ClientId,
          client_pid => false,
          alias => Alias,
@@ -528,4 +527,4 @@ get_topic(Topic) -> Topic.
 
 -spec ensure_has_alias(topic_or_alias()) -> alias_and_topic().
 ensure_has_alias({Alias, Topic}) -> {Alias, Topic};
-ensure_has_alias(Topic) -> {undefined, Topic}.
+ensure_has_alias(Topic) -> {?NO_ALIAS, Topic}.

@@ -25,4 +25,8 @@
 %% is inserted to cache the partition count.
 -define(WOLFF_PRODUCERS_GLOBAL_TABLE, wolff_producers_global).
 
+-define(NO_ALIAS, no_alias).
+
+-define(all_partitions, all_partitions).
+
 -endif.

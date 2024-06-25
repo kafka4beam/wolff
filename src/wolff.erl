@@ -14,6 +14,8 @@
 
 -module(wolff).
 
+-include("wolff.hrl").
+
 %% Supervised client management APIs
 -export([ensure_supervised_client/3,
          stop_and_delete_supervised_client/1
@@ -100,7 +102,7 @@ ensure_supervised_producers(ClientId, Topic, ProducerCfg) ->
 %% @hidden Deprecated.
 -spec stop_and_delete_supervised_producers(client_id(), topic(), name()) -> ok.
 stop_and_delete_supervised_producers(ClientId, Topic, _Name) ->
-    stop_and_delete_supervised_producers(ClientId, {_Alias = undefined, Topic}).
+    stop_and_delete_supervised_producers(ClientId, {_Alias = ?NO_ALIAS, Topic}).
 
 %% @doc Ensure supervised producers are stopped then deleted.
 stop_and_delete_supervised_producers(ClientId, Topic) ->

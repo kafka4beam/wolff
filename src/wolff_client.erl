@@ -30,19 +30,21 @@
 %% gen_server callbacks
 -export([code_change/3, handle_call/3, handle_cast/2, handle_info/2, init/1, terminate/2]).
 
--export_type([config/0]).
+-export_type([config/0, producer_alias/0, alias_and_topic/0, topic_or_alias/0, max_partitions/0]).
 
 %% deprecated
 -export([check_if_topic_exists/3]).
 
 -type config() :: map().
 -type topic() :: kpro:topic().
--type alias_and_topic() :: wolff_producers:alias_and_topic().
+-type producer_alias() :: binary().
+-type alias_and_topic() :: {producer_alias() | ?NO_ALIAS, topic()}.
 -type topic_or_alias() :: topic() | alias_and_topic().
 -type partition() :: kpro:partition().
 -type connection() :: kpro:connection().
 -type host() :: wolff:host().
--type conn_id() :: {topic_or_alias(), partition()} | host().
+-type conn_id() :: {topic(), partition()} | host().
+-type max_partitions() :: pos_integer() | ?all_partitions.
 
 -type state() ::
       #{client_id := wolff:client_id(),
@@ -330,7 +332,7 @@ ensure_leader_connections(St, TopicOrAlias, MaxPartitions) ->
     false -> ensure_leader_connections2(St, TopicOrAlias, MaxPartitions)
   end.
 
--spec ensure_leader_connections2(state(), topic_or_alias(), wolff_producers:max_partitions()) ->
+-spec ensure_leader_connections2(state(), topic_or_alias(), max_partitions()) ->
           {ok, state()} | {error, term()}.
 ensure_leader_connections2(#{metadata_conn := Pid, conn_config := ConnConfig} = St, TopicOrAlias, MaxPartitions) when is_pid(Pid) ->
   Topic = get_topic(TopicOrAlias),
@@ -356,7 +358,7 @@ ensure_leader_connections2(#{conn_config := ConnConfig,
   end.
 
 -spec ensure_leader_connections3(state(), topic_or_alias(), pid(), _Brokers,
-                                 _PartitionMetaList, wolff_producers:max_partitions()) ->
+                                 _PartitionMetaList, max_partitions()) ->
           {ok, state()}.
 ensure_leader_connections3(#{metadata_ts := MetadataTs} = St0, TopicOrAlias,
                            ConnPid, Brokers, PartitionMetaList0, MaxPartitions) ->
@@ -614,4 +616,4 @@ get_topic(Topic) -> Topic.
 
 -spec ensure_has_alias(topic_or_alias()) -> alias_and_topic().
 ensure_has_alias({Alias, Topic}) -> {Alias, Topic};
-ensure_has_alias(Topic) -> {undefined, Topic}.
+ensure_has_alias(Topic) -> {?NO_ALIAS, Topic}.

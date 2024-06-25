@@ -16,6 +16,8 @@
 
 -behaviour(supervisor).
 
+-include("wolff.hrl").
+
 -export([start_link/0, init/1]).
 
 -export([ensure_present/3, ensure_absence/2]).
@@ -59,7 +61,7 @@ ensure_absence(ClientId, TopicOrAlias) ->
   end.
 
 child_spec(ClientId, Topic, Config) ->
-  Alias = maps:get(alias, Config, undefined),
+  Alias = maps:get(alias, Config, ?NO_ALIAS),
   AliasTopic = {Alias, Topic},
   #{id => worker_id(ClientId, AliasTopic),
     start => {wolff_producers, start_link, [ClientId, AliasTopic, Config]},
