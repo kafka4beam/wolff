@@ -93,11 +93,11 @@ start_linked_producers(ClientPid, Topic, ProducerCfg) when is_pid(ClientPid) ->
 start_linked_producers(ClientId, ClientPid, TopicOrAlias, ProducerCfg) ->
   MaxPartitions = maps:get(max_partitions, ProducerCfg, ?all_partitions),
   AliasTopic = case TopicOrAlias of
-                   {_Alias, _Topic} ->
+                   ?ALIASED_TOPIC(_Alias, _Topic) ->
                        TopicOrAlias;
                    Topic0 ->
                        Alias = maps:get(alias, ProducerCfg, ?NO_ALIAS),
-                       {Alias, Topic0}
+                       ?ALIASED_TOPIC(Alias, Topic0)
                end,
   case wolff_client:get_leader_connections(ClientPid, AliasTopic, MaxPartitions) of
     {ok, Connections} ->
@@ -129,12 +129,12 @@ start_supervised(ClientId, Topic, ProducerCfg) ->
           %% This means wolff_client failed to fetch metadata
           %% for this topic.
           Alias = maps:get(alias, ProducerCfg, ?NO_ALIAS),
-          AliasTopic = {Alias, Topic},
+          AliasTopic = ?ALIASED_TOPIC(Alias, Topic),
           _ = wolff_producers_sup:ensure_absence(ClientId, AliasTopic),
           {error, failed_to_initialize_producers_in_time};
         _ ->
           Alias = maps:get(alias, ProducerCfg, ?NO_ALIAS),
-          AliasTopic = {Alias, Topic},
+          AliasTopic = ?ALIASED_TOPIC(Alias, Topic),
           {ok, #{client_id => ClientId,
                  topic => AliasTopic,
                  partitioner => maps:get(partitioner, ProducerCfg, random)
@@ -525,13 +525,13 @@ ensure_timer_cancelled(_) ->
   ok.
 
 -spec get_topic(topic_or_alias()) -> topic().
-get_topic({_Alias, Topic}) -> Topic;
+get_topic(?ALIASED_TOPIC(_Alias, Topic)) -> Topic;
 get_topic(Topic) -> Topic.
 
 -spec get_alias(topic_or_alias()) -> producer_alias().
-get_alias({Alias, _Topic}) -> Alias;
+get_alias(?ALIASED_TOPIC(Alias, _Topic)) -> Alias;
 get_alias(_Topic) -> ?NO_ALIAS.
 
 -spec ensure_has_alias(topic_or_alias()) -> alias_and_topic().
-ensure_has_alias({Alias, Topic}) -> {Alias, Topic};
-ensure_has_alias(Topic) -> {?NO_ALIAS, Topic}.
+ensure_has_alias(?ALIASED_TOPIC(Alias, Topic)) -> {Alias, Topic};
+ensure_has_alias(Topic) -> ?ALIASED_TOPIC(?NO_ALIAS, Topic).

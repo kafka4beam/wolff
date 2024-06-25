@@ -102,7 +102,7 @@ ensure_supervised_producers(ClientId, Topic, ProducerCfg) ->
 %% @hidden Deprecated.
 -spec stop_and_delete_supervised_producers(client_id(), topic(), name()) -> ok.
 stop_and_delete_supervised_producers(ClientId, Topic, _Name) ->
-    stop_and_delete_supervised_producers(ClientId, {_Alias = ?NO_ALIAS, Topic}).
+    stop_and_delete_supervised_producers(ClientId, ?ALIASED_TOPIC(?NO_ALIAS, Topic)).
 
 %% @doc Ensure supervised producers are stopped then deleted.
 stop_and_delete_supervised_producers(ClientId, Topic) ->

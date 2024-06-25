@@ -38,7 +38,7 @@
 -type config() :: map().
 -type topic() :: kpro:topic().
 -type producer_alias() :: binary().
--type alias_and_topic() :: {producer_alias() | ?NO_ALIAS, topic()}.
+-type alias_and_topic() :: ?ALIASED_TOPIC(producer_alias() | ?NO_ALIAS, topic()).
 -type topic_or_alias() :: topic() | alias_and_topic().
 -type partition() :: kpro:partition().
 -type connection() :: kpro:connection().
@@ -620,13 +620,13 @@ bin(X) ->
     end.
 
 -spec get_topic(topic_or_alias()) -> topic().
-get_topic({_Alias, Topic}) -> Topic;
+get_topic(?ALIASED_TOPIC(_Alias, Topic)) -> Topic;
 get_topic(Topic) -> Topic.
 
 -spec get_alias(topic_or_alias()) -> producer_alias().
-get_alias({Alias, _Topic}) -> Alias;
+get_alias(?ALIASED_TOPIC(Alias, _Topic)) -> Alias;
 get_alias(_Topic) -> ?NO_ALIAS.
 
 -spec ensure_has_alias(topic_or_alias()) -> alias_and_topic().
-ensure_has_alias({Alias, Topic}) -> {Alias, Topic};
-ensure_has_alias(Topic) -> {?NO_ALIAS, Topic}.
+ensure_has_alias(?ALIASED_TOPIC(Alias, Topic)) -> {Alias, Topic};
+ensure_has_alias(Topic) -> ?ALIASED_TOPIC(?NO_ALIAS, Topic).
