@@ -59,7 +59,7 @@
         %% but we need to find connection by {topic(), partition()}
         leaders => #{{topic(), partition()} => connection()},
         %% Reference counting so we may drop connection metadata when no longer required.
-        known_topics := #{topic() => #{topic_or_alias() => true}}
+        known_topics := #{topic() => #{producer_alias() | ?NO_ALIAS => true}}
        }.
 
 -define(DEFAULT_METADATA_TIMEOUT, 10000).
@@ -221,17 +221,18 @@ handle_cast({delete_producers_metadata, TopicOrAlias}, St0) ->
     conns := Conns0,
     known_topics := KnownTopics0} = St0,
   Topic = get_topic(TopicOrAlias),
+  Alias = get_alias(TopicOrAlias),
   case KnownTopics0 of
-      #{Topic := #{TopicOrAlias := true} = KnownProducers} when map_size(KnownProducers) =:= 1 ->
+      #{Topic := #{Alias := true} = KnownProducers} when map_size(KnownProducers) =:= 1 ->
           %% Last entry: we may drop the connection metadata
           KnownTopics = maps:remove(Topic, KnownTopics0),
           Conns = maps:without( [K || K = {K1, _} <- maps:keys(Conns0), K1 =:= Topic], Conns0),
-          Topics = maps:remove(TopicOrAlias, Topics0),
+          Topics = maps:remove(Alias, Topics0),
           St = St0#{metadata_ts := Topics, conns := Conns, known_topics := KnownTopics},
           {noreply, St};
-      #{Topic := #{TopicOrAlias := true} = KnownProducers0} ->
+      #{Topic := #{Alias := true} = KnownProducers0} ->
           %% Connection is still being used by other producers.
-          KnownProducers = maps:remove(TopicOrAlias, KnownProducers0),
+          KnownProducers = maps:remove(Alias, KnownProducers0),
           KnownTopics = KnownTopics0#{Topic := KnownProducers},
           St = St0#{known_topics := KnownTopics},
           {noreply, St};
@@ -392,9 +393,11 @@ ensure_leader_connection(St, Brokers, TopicOrAlias, P_Meta) ->
 -spec do_ensure_leader_connection(state(), _Brokers, topic_or_alias(), _Partition, _PartitionMetaList) ->
           state().
 do_ensure_leader_connection(#{conn_config := ConnConfig,
-                              conns := Connections0
+                              conns := Connections0,
+                              known_topics := KnownTopics0
                              } = St0, Brokers, TopicOrAlias, PartitionNum, P_Meta) ->
   Topic = get_topic(TopicOrAlias),
+  Alias = get_alias(TopicOrAlias),
   LeaderBrokerId = kpro:find(leader_id, P_Meta),
   {_, Host} = lists:keyfind(LeaderBrokerId, 1, Brokers),
   Strategy = get_connection_strategy(St0),
@@ -413,7 +416,13 @@ do_ensure_leader_connection(#{conn_config := ConnConfig,
       false ->
         add_conn(do_connect(Host, ConnConfig), ConnId, Connections0)
     end,
-  St = St0#{conns := Connections},
+  KnownTopics =
+        maps:update_with(
+          Topic,
+          fun(KnownAliases) -> KnownAliases#{Alias => true} end,
+          #{Alias => true},
+          KnownTopics0),
+  St = St0#{conns := Connections, known_topics := KnownTopics},
   Leaders0 = maps:get(leaders, St0, #{}),
   case Strategy of
     per_broker ->
