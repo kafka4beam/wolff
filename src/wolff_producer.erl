@@ -201,13 +201,13 @@ do_init(#{client_id := ClientId,
          } = St) ->
   AliasPathSegment = case maps:find(alias, Config0) of
                          {ok, Alias} when is_binary(Alias) -> Alias;
-                         _ -> <<"">>
+                         _ -> Topic
                      end,
   QCfg = case maps:get(replayq_dir, Config0, false) of
            false ->
              #{mem_only => true};
            BaseDir ->
-             Dir = filename:join([BaseDir, AliasPathSegment, Topic, integer_to_list(Partition)]),
+             Dir = filename:join([BaseDir, AliasPathSegment, integer_to_list(Partition)]),
              SegBytes = maps:get(replayq_seg_bytes, Config0, ?DEFAULT_REPLAYQ_SEG_BYTES),
              Offload = maps:get(replayq_offload_mode, Config0, false),
              #{dir => Dir, seg_bytes => SegBytes, offload => Offload}
