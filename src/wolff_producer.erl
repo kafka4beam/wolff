@@ -735,7 +735,9 @@ ensure_delayed_reconnect(#{config := #{reconnect_delay_ms := Delay0} = Config,
     end,
   case wolff_client_sup:find_client(ClientId) of
     {ok, ClientPid} ->
-      Args = [ClientPid, Topic, Partition, self(), MaxPartitions],
+      Alias = maps:get(alias, Config, ?NO_ALIAS),
+      AliasTopic = ?ALIASED_TOPIC(Alias, Topic),
+      Args = [ClientPid, AliasTopic, Partition, self(), MaxPartitions],
       {ok, Tref} = timer:apply_after(Delay, wolff_client, recv_leader_connection, Args),
       St#{reconnect_timer => Tref, reconnect_attempts => Attempts + 1};
     {error, Reason} ->

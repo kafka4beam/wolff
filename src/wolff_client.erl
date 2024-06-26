@@ -153,8 +153,8 @@ safe_call(Pid, Call) ->
   end.
 
 %% request client to send Pid the leader connection.
-recv_leader_connection(Client, Topic, Partition, Pid, MaxPartitions) ->
-  gen_server:cast(Client, {recv_leader_connection, Topic, Partition, Pid, MaxPartitions}).
+recv_leader_connection(Client, TopicOrAlias, Partition, Pid, MaxPartitions) ->
+  gen_server:cast(Client, {recv_leader_connection, TopicOrAlias, Partition, Pid, MaxPartitions}).
 
 delete_producers_metadata(Client, TopicOrAlias) ->
     gen_server:cast(Client, {delete_producers_metadata, TopicOrAlias}).
@@ -203,10 +203,10 @@ handle_info(_Info, St) ->
 
 handle_cast(Cast, #{connect := _Fun} = St) ->
     handle_cast(Cast, upgrade(St));
-handle_cast({recv_leader_connection, Topic, Partition, Caller, MaxConnections}, St0) ->
-  case ensure_leader_connections(St0, Topic, MaxConnections) of
+handle_cast({recv_leader_connection, TopicOrAlias, Partition, Caller, MaxConnections}, St0) ->
+  case ensure_leader_connections(St0, TopicOrAlias, MaxConnections) of
     {ok, St} ->
-      Partitions = do_get_leader_connections(St, Topic),
+      Partitions = do_get_leader_connections(St, TopicOrAlias),
       %% the Partition in argument is a result of ensure_leader_connections
       %% so here the lists:keyfind must succeeded, otherwise a bug
       {_, MaybePid} = lists:keyfind(Partition, 1, Partitions),
