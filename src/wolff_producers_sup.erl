@@ -16,9 +16,13 @@
 
 -behaviour(supervisor).
 
+-include("wolff.hrl").
+
 -export([start_link/0, init/1]).
 
 -export([ensure_present/3, ensure_absence/2]).
+
+-type topic_or_alias() :: wolff_producers:topic_or_alias().
 
 -define(SUPERVISOR, ?MODULE).
 
@@ -45,24 +49,25 @@ ensure_present(ClientId, Topic, Config) ->
   end.
 
 %% ensure client stopped and deleted under supervisor
--spec ensure_absence(wolff:client_id(), wolff:topic()) -> ok.
-ensure_absence(ClientId, Topic) ->
-  Id = worker_id(ClientId, Topic),
+-spec ensure_absence(wolff:client_id(), topic_or_alias()) -> ok.
+ensure_absence(ClientId, TopicOrAlias) ->
+  Id = worker_id(ClientId, TopicOrAlias),
   case supervisor:terminate_child(?SUPERVISOR, Id) of
     ok ->
-      ok = wolff_producers:cleanup_workers_table(ClientId, Topic),
+      ok = wolff_producers:cleanup_workers_table(ClientId, TopicOrAlias),
       ok = supervisor:delete_child(?SUPERVISOR, Id);
     {error, not_found} ->
       ok
   end.
 
 child_spec(ClientId, Topic, Config) ->
-  #{id => worker_id(ClientId, Topic),
-    start => {wolff_producers, start_link, [ClientId, Topic, Config]},
+  Alias = maps:get(alias, Config, ?NO_ALIAS),
+  AliasTopic = {Alias, Topic},
+  #{id => worker_id(ClientId, AliasTopic),
+    start => {wolff_producers, start_link, [ClientId, AliasTopic, Config]},
     restart => transient,
-    type => worker,
-    modules => [wolff_producers]
+    type => worker
    }.
 
-worker_id(ClientId, Topic) ->
-  {ClientId, Topic}.
+worker_id(ClientId, TopicOrAlias) ->
+  {ClientId, TopicOrAlias}.

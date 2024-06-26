@@ -31,12 +31,13 @@
 %% for test
 -export([batch_bytes/1, varint_bytes/1]).
 
--export_type([config/0, config_key/0]).
+-export_type([config_in/0, config_key/0]).
 
 -type topic() :: kpro:topic().
 -type partition() :: kpro:partition().
 -type offset_reply() :: wolff:offset_reply().
--type config_key() :: replayq_dir |
+-type config_key() :: alias |
+                      replayq_dir |
                       replayq_max_total_bytes |
                       replayq_seg_bytes |
                       replayq_offload_mode |
@@ -50,21 +51,38 @@
                       telemetry_meta_data |
                       max_partitions.
 
--type config() :: #{replayq_dir := string(),
-                    replayq_max_total_bytes => pos_integer(),
-                    replayq_seg_bytes => pos_integer(),
-                    replayq_offload_mode => boolean(),
-                    required_acks => kpro:required_acks(),
-                    ack_timeout => timeout(),
-                    max_batch_bytes => pos_integer(),
-                    max_linger_ms => non_neg_integer(),
-                    max_send_ahead => non_neg_integer(),
-                    compression => kpro:compress_option(),
-                    drop_if_highmem => boolean(),
-                    telemetry_meta_data => map(),
-                    enable_global_stats => boolean(),
-                    max_partitions => pos_integer()
-                   }.
+-type config_in() :: #{alias => wolff_client:producer_alias(),
+                       replayq_dir => string() | binary(),
+                       replayq_max_total_bytes => pos_integer(),
+                       replayq_seg_bytes => pos_integer(),
+                       replayq_offload_mode => boolean(),
+                       required_acks => kpro:required_acks(),
+                       ack_timeout => timeout(),
+                       max_batch_bytes => pos_integer(),
+                       max_linger_ms => non_neg_integer(),
+                       max_send_ahead => non_neg_integer(),
+                       compression => kpro:compress_option(),
+                       drop_if_highmem => boolean(),
+                       telemetry_meta_data => map(),
+                       enable_global_stats => boolean(),
+                       max_partitions => pos_integer()
+                      }.
+
+%% Some keys are removed from `config_in()'.
+-type config_state() :: #{alias => wolff_client:topic_or_alias(),
+                          replayq_max_total_bytes => pos_integer(),
+                          replayq_offload_mode => boolean(),
+                          required_acks => kpro:required_acks(),
+                          ack_timeout => timeout(),
+                          max_batch_bytes => pos_integer(),
+                          max_linger_ms => non_neg_integer(),
+                          max_send_ahead => non_neg_integer(),
+                          compression => kpro:compress_option(),
+                          drop_if_highmem => boolean(),
+                          telemetry_meta_data => map(),
+                          enable_global_stats => boolean(),
+                          max_partitions => pos_integer()
+                         }.
 
 -define(no_timer, no_timer).
 -define(reconnect, reconnect).
@@ -88,16 +106,16 @@
 
 -type state() :: #{ call_id_base := pos_integer()
                   , client_id := wolff:client_id()
-                  , config := config()
+                  , config := config_state()
                   , conn := undefined | _
                   , ?linger_expire_timer := false | timer:tref()
                   , partition := partition()
                   , pending_acks := #{} % CallId => AckCb
                   , produce_api_vsn := undefined | _
                   , replayq := replayq:q()
-                  , sent_reqs => queue:queue(sent())
-                  , sent_reqs_count => non_neg_integer()
-                  , inflight_calls => non_neg_integer()
+                  , sent_reqs := queue:queue(sent())
+                  , sent_reqs_count := non_neg_integer()
+                  , inflight_calls := non_neg_integer()
                   , topic := topic()
                   , enable_global_stats := boolean()
                   }.
@@ -121,7 +139,7 @@
 %% * `enable_global_stats': `true' | `false'.
 %%    Introduced in 1.9.0, default is `false'. Set to `true' to enalbe a global
 %%    send/receive stats table created in `wolff_stats' module.
--spec start_link(wolff:client_id(), topic(), partition(), pid() | ?conn_down(any()), config()) ->
+-spec start_link(wolff:client_id(), topic(), partition(), pid() | ?conn_down(any()), config_in()) ->
   {ok, pid()} | {error, any()}.
 start_link(ClientId, Topic, Partition, MaybeConnPid, Config) ->
   St = #{client_id => ClientId,
@@ -199,11 +217,16 @@ do_init(#{client_id := ClientId,
           partition := Partition,
           config := Config0
          } = St) ->
+  AliasPathSegment0 = case maps:find(alias, Config0) of
+                         {ok, Alias} when is_binary(Alias) -> Alias;
+                         _ -> Topic
+                     end,
+  AliasPathSegment = escape(AliasPathSegment0),
   QCfg = case maps:get(replayq_dir, Config0, false) of
            false ->
              #{mem_only => true};
            BaseDir ->
-             Dir = filename:join([BaseDir, Topic, integer_to_list(Partition)]),
+             Dir = filename:join([BaseDir, AliasPathSegment, integer_to_list(Partition)]),
              SegBytes = maps:get(replayq_seg_bytes, Config0, ?DEFAULT_REPLAYQ_SEG_BYTES),
              Offload = maps:get(replayq_offload_mode, Config0, false),
              #{dir => Dir, seg_bytes => SegBytes, offload => Offload}
@@ -712,7 +735,9 @@ ensure_delayed_reconnect(#{config := #{reconnect_delay_ms := Delay0} = Config,
     end,
   case wolff_client_sup:find_client(ClientId) of
     {ok, ClientPid} ->
-      Args = [ClientPid, Topic, Partition, self(), MaxPartitions],
+      Alias = maps:get(alias, Config, ?NO_ALIAS),
+      AliasTopic = ?ALIASED_TOPIC(Alias, Topic),
+      Args = [ClientPid, AliasTopic, Partition, self(), MaxPartitions],
       {ok, Tref} = timer:apply_after(Delay, wolff_client, recv_leader_connection, Args),
       St#{reconnect_timer => Tref, reconnect_attempts => Attempts + 1};
     {error, Reason} ->
@@ -947,6 +972,49 @@ is_replayq_durable(#{replayq_offload_mode := true}, _Q) ->
     false;
 is_replayq_durable(_, Q) ->
     not replayq:is_mem_only(Q).
+
+-spec escape(string() | binary()) -> binary().
+escape(Str) ->
+    NormalizedStr = unicode:characters_to_nfd_list(Str),
+    iolist_to_binary(escape_uri(NormalizedStr)).
+
+%% copied from `edoc_lib' because dialyzer cannot see this private
+%% function there.
+escape_uri([C | Cs]) when C >= $a, C =< $z ->
+    [C | escape_uri(Cs)];
+escape_uri([C | Cs]) when C >= $A, C =< $Z ->
+    [C | escape_uri(Cs)];
+escape_uri([C | Cs]) when C >= $0, C =< $9 ->
+    [C | escape_uri(Cs)];
+escape_uri([C = $. | Cs]) ->
+    [C | escape_uri(Cs)];
+escape_uri([C = $- | Cs]) ->
+    [C | escape_uri(Cs)];
+escape_uri([C = $_ | Cs]) ->
+    [C | escape_uri(Cs)];
+escape_uri([C | Cs]) when C > 16#7f ->
+    %% This assumes that characters are at most 16 bits wide.
+    escape_byte(((C band 16#c0) bsr 6) + 16#c0)
+	++ escape_byte(C band 16#3f + 16#80)
+	++ escape_uri(Cs);
+escape_uri([C | Cs]) ->
+    escape_byte(C) ++ escape_uri(Cs);
+escape_uri([]) ->
+    [].
+
+%% copied from `edoc_lib' because dialyzer cannot see this private
+%% function there.
+%% has a small modification: it uses `=' in place of `%' so that it
+%% won't generate invalid paths in windows.
+escape_byte(C) when C >= 0, C =< 255 ->
+    [$=, hex_digit(C bsr 4), hex_digit(C band 15)].
+
+%% copied from `edoc_lib' because dialyzer cannot see this private
+%% function there.
+hex_digit(N) when N >= 0, N =< 9 ->
+    N + $0;
+hex_digit(N) when N > 9, N =< 15 ->
+    N + $a - 10.
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").

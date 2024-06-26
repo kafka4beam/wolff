@@ -3,6 +3,10 @@ services:
   zookeeper:
     image: wurstmeister/zookeeper
     container_name: wolff-zk
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
   kafka_1:
     depends_on:
       - zookeeper

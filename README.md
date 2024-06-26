@@ -54,6 +54,14 @@ ok = wolff:stop_producers(Producers).
 ok = wolff:stop_client(Client).
 ```
 
+If you want to use more than one producer pointing to the same topic, be sure to define an unique `alias` for each one to avoid clashes.
+
+```erlang
+Topic = <<"test-topic">>.
+{ok, Producers1} = wolff:start_producers(Client, Topic, ProducerCfg#{alias => <<"a1">>}).
+{ok, Producers2} = wolff:start_producers(Client, Topic, ProducerCfg#{alias => <<"a2">>}).
+```
+
 ### Async Produce with Callback
 
 ```
@@ -182,7 +190,7 @@ defining telemetry events. Wolff defines such telemetry events. Users of Wolff
 can attach functions to the events, for example, to record when a message has
 been successfully sent to Kafka. Wolff's telemetry events are described in the
 `wolff_metrics` module. One can read more about how to attach code to the
-events in [Beam Telemetry's documentation](https://github.com/beam-telemetry/telemetry). 
+events in [Beam Telemetry's documentation](https://github.com/beam-telemetry/telemetry).
 The third parameter of the Beam Telemetry handler function is a meta data map.
 One can send a custom meta data map for each Kafka producer instance by setting
 the Kafka producer configuration parameter `telemetry_meta_data` to the map one

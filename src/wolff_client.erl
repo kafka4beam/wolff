@@ -30,17 +30,21 @@
 %% gen_server callbacks
 -export([code_change/3, handle_call/3, handle_cast/2, handle_info/2, init/1, terminate/2]).
 
--export_type([config/0]).
+-export_type([config/0, producer_alias/0, alias_and_topic/0, topic_or_alias/0, max_partitions/0]).
 
 %% deprecated
 -export([check_if_topic_exists/3]).
 
 -type config() :: map().
 -type topic() :: kpro:topic().
+-type producer_alias() :: binary().
+-type alias_and_topic() :: ?ALIASED_TOPIC(producer_alias() | ?NO_ALIAS, topic()).
+-type topic_or_alias() :: topic() | alias_and_topic().
 -type partition() :: kpro:partition().
 -type connection() :: kpro:connection().
 -type host() :: wolff:host().
 -type conn_id() :: {topic(), partition()} | host().
+-type max_partitions() :: pos_integer() | ?all_partitions.
 
 -type state() ::
       #{client_id := wolff:client_id(),
@@ -53,7 +57,9 @@
         %% only applicable when connection strategy is per_broker
         %% because in this case the connections are keyed by host()
         %% but we need to find connection by {topic(), partition()}
-        leaders => #{{topic(), partition()} => connection()}
+        leaders => #{{topic(), partition()} => connection()},
+        %% Reference counting so we may drop connection metadata when no longer required.
+        known_topics := #{topic() => #{producer_alias() | ?NO_ALIAS => true}}
        }.
 
 -define(DEFAULT_METADATA_TIMEOUT, 10000).
@@ -81,7 +87,8 @@ start_link(ClientId, Hosts, Config) ->
          conns => #{},
          metadata_conn => not_initialized,
          metadata_ts => #{},
-         leaders => #{}
+         leaders => #{},
+         known_topics => #{}
         },
   case maps:get(reg_name, Config, false) of
     false -> gen_server:start_link(?MODULE, St, []);
@@ -94,15 +101,17 @@ stop(Pid) ->
 get_id(Pid) ->
   gen_server:call(Pid, get_id, infinity).
 
--spec get_leader_connections(pid(), topic()) ->
+-spec get_leader_connections(pid(), topic_or_alias()) ->
         {ok, [{partition(), pid() | ?conn_down(_)}]} | {error, any()}.
-get_leader_connections(Client, Topic) ->
-   safe_call(Client, {get_leader_connections, Topic, all_partitions}).
+get_leader_connections(Client, TopicOrAlias0) ->
+   TopicOrAlias = ensure_has_alias(TopicOrAlias0),
+   safe_call(Client, {get_leader_connections, TopicOrAlias, all_partitions}).
 
--spec get_leader_connections(pid(), topic(), all_partitions | pos_integer()) ->
+-spec get_leader_connections(pid(), topic_or_alias(), all_partitions | pos_integer()) ->
         {ok, [{partition(), pid() | ?conn_down(_)}]} | {error, any()}.
-get_leader_connections(Client, Topic, MaxPartitions) ->
-   safe_call(Client, {get_leader_connections, Topic, MaxPartitions}).
+get_leader_connections(Client, TopicOrAlias0, MaxPartitions) ->
+   TopicOrAlias = ensure_has_alias(TopicOrAlias0),
+   safe_call(Client, {get_leader_connections, TopicOrAlias, MaxPartitions}).
 
 %% @doc Check if client has a metadata connection alive.
 %% Trigger a reconnect if the connection is down for whatever reason.
@@ -144,11 +153,11 @@ safe_call(Pid, Call) ->
   end.
 
 %% request client to send Pid the leader connection.
-recv_leader_connection(Client, Topic, Partition, Pid, MaxPartitions) ->
-  gen_server:cast(Client, {recv_leader_connection, Topic, Partition, Pid, MaxPartitions}).
+recv_leader_connection(Client, TopicOrAlias, Partition, Pid, MaxPartitions) ->
+  gen_server:cast(Client, {recv_leader_connection, TopicOrAlias, Partition, Pid, MaxPartitions}).
 
-delete_producers_metadata(Client, Topic) ->
-    gen_server:cast(Client, {delete_producers_metadata, Topic}).
+delete_producers_metadata(Client, TopicOrAlias) ->
+    gen_server:cast(Client, {delete_producers_metadata, TopicOrAlias}).
 
 init(#{client_id := ClientID} = St) ->
   erlang:process_flag(trap_exit, true),
@@ -167,10 +176,10 @@ handle_call({check_if_topic_exists, Topic}, _From, #{conn_config := ConnConfig} 
     {error, Reason} ->
       {reply, {error, Reason}, St0}
   end;
-handle_call({get_leader_connections, Topic, MaxPartitions}, _From, St0) ->
-  case ensure_leader_connections(St0, Topic, MaxPartitions) of
+handle_call({get_leader_connections, TopicOrAlias, MaxPartitions}, _From, St0) ->
+  case ensure_leader_connections(St0, TopicOrAlias, MaxPartitions) of
     {ok, St} ->
-      Result = do_get_leader_connections(St, Topic),
+      Result = do_get_leader_connections(St, TopicOrAlias),
       {reply, {ok, Result}, St};
     {error, Reason} ->
       {reply, {error, Reason}, St0}
@@ -194,10 +203,10 @@ handle_info(_Info, St) ->
 
 handle_cast(Cast, #{connect := _Fun} = St) ->
     handle_cast(Cast, upgrade(St));
-handle_cast({recv_leader_connection, Topic, Partition, Caller, MaxConnections}, St0) ->
-  case ensure_leader_connections(St0, Topic, MaxConnections) of
+handle_cast({recv_leader_connection, TopicOrAlias, Partition, Caller, MaxConnections}, St0) ->
+  case ensure_leader_connections(St0, TopicOrAlias, MaxConnections) of
     {ok, St} ->
-      Partitions = do_get_leader_connections(St, Topic),
+      Partitions = do_get_leader_connections(St, TopicOrAlias),
       %% the Partition in argument is a result of ensure_leader_connections
       %% so here the lists:keyfind must succeeded, otherwise a bug
       {_, MaybePid} = lists:keyfind(Partition, 1, Partitions),
@@ -207,11 +216,30 @@ handle_cast({recv_leader_connection, Topic, Partition, Caller, MaxConnections}, 
       _ = erlang:send(Caller, ?leader_connection({error, Reason})),
       {noreply, St0}
   end;
-
-handle_cast({delete_producers_metadata, Topic}, #{metadata_ts := Topics, conns := Conns} = St) ->
-  Conns1 = maps:without( [K || K = {K1, _} <- maps:keys(Conns), K1 =:= Topic ], Conns),
-  {noreply, St#{metadata_ts => maps:remove(Topic, Topics), conns => Conns1}};
-
+handle_cast({delete_producers_metadata, TopicOrAlias}, St0) ->
+  #{metadata_ts := Topics0,
+    conns := Conns0,
+    known_topics := KnownTopics0} = St0,
+  Topic = get_topic(TopicOrAlias),
+  Alias = get_alias(TopicOrAlias),
+  case KnownTopics0 of
+      #{Topic := #{Alias := true} = KnownProducers} when map_size(KnownProducers) =:= 1 ->
+          %% Last entry: we may drop the connection metadata
+          KnownTopics = maps:remove(Topic, KnownTopics0),
+          Conns = maps:without( [K || K = {K1, _} <- maps:keys(Conns0), K1 =:= Topic], Conns0),
+          Topics = maps:remove(Alias, Topics0),
+          St = St0#{metadata_ts := Topics, conns := Conns, known_topics := KnownTopics},
+          {noreply, St};
+      #{Topic := #{Alias := true} = KnownProducers0} ->
+          %% Connection is still being used by other producers.
+          KnownProducers = maps:remove(Alias, KnownProducers0),
+          KnownTopics = KnownTopics0#{Topic := KnownProducers},
+          St = St0#{known_topics := KnownTopics},
+          {noreply, St};
+      _ ->
+          %% Already gone; nothing to do.
+          {noreply, St0}
+  end;
 handle_cast(_Cast, St) ->
   {noreply, St}.
 
@@ -269,7 +297,8 @@ do_close_connection(Pid) ->
       exit(Pid, kill)
   end.
 
-do_get_leader_connections(#{conns := Conns} = St, Topic) ->
+do_get_leader_connections(#{conns := Conns} = St, TopicOrAlias) ->
+  Topic = get_topic(TopicOrAlias),
   FindInMap = case get_connection_strategy(St) of
                 per_partition -> Conns;
                 per_broker -> maps:get(leaders, St)
@@ -288,49 +317,57 @@ do_get_leader_connections(#{conns := Conns} = St, Topic) ->
   maps:fold(F, [], FindInMap).
 
 %% return true if there is no need to refresh metadata because the last one is fresh enough
-is_metadata_fresh(#{metadata_ts := Topics, config := Config}, Topic) ->
+is_metadata_fresh(#{metadata_ts := Topics, config := Config}, TopicOrAlias) ->
   MinInterval = maps:get(min_metadata_refresh_interval, Config, ?MIN_METADATA_REFRESH_INTERVAL),
-  case maps:get(Topic, Topics, false) of
+  case maps:get(TopicOrAlias, Topics, false) of
     false -> false;
     Ts -> timer:now_diff(erlang:timestamp(), Ts) < MinInterval * 1000
   end.
 
--spec ensure_leader_connections(state(), topic(), all_partitions | pos_integer()) ->
+-spec ensure_leader_connections(state(), topic_or_alias(), all_partitions | pos_integer()) ->
   {ok, state()} | {error, any()}.
-ensure_leader_connections(St, Topic, MaxPartitions) ->
+ensure_leader_connections(St, TopicOrAlias, MaxPartitions) ->
+  Topic = get_topic(TopicOrAlias),
   case is_metadata_fresh(St, Topic) of
     true -> {ok, St};
-    false -> ensure_leader_connections2(St, Topic, MaxPartitions)
+    false -> ensure_leader_connections2(St, TopicOrAlias, MaxPartitions)
   end.
 
-ensure_leader_connections2(#{metadata_conn := Pid, conn_config := ConnConfig} = St, Topic, MaxPartitions) when is_pid(Pid) ->
+-spec ensure_leader_connections2(state(), topic_or_alias(), max_partitions()) ->
+          {ok, state()} | {error, term()}.
+ensure_leader_connections2(#{metadata_conn := Pid, conn_config := ConnConfig} = St, TopicOrAlias, MaxPartitions) when is_pid(Pid) ->
+  Topic = get_topic(TopicOrAlias),
   Timeout = maps:get(request_timeout, ConnConfig, ?DEFAULT_METADATA_TIMEOUT),
   case do_get_metadata(Pid, Topic, Timeout) of
     {ok, {Brokers, PartitionMetaList}} ->
-      ensure_leader_connections3(St, Topic, Pid, Brokers, PartitionMetaList, MaxPartitions);
+      ensure_leader_connections3(St, TopicOrAlias, Pid, Brokers, PartitionMetaList, MaxPartitions);
     {error, _Reason} ->
       %% ensure metadata connection is down, try to establish a new one in the next clause,
       %% reason is discarded here, because the next clause will log error if the immediate retry fails
       exit(Pid, kill),
-      ensure_leader_connections2(St#{metadata_conn => down}, Topic, MaxPartitions)
+      ensure_leader_connections2(St#{metadata_conn => down}, TopicOrAlias, MaxPartitions)
   end;
 ensure_leader_connections2(#{conn_config := ConnConfig,
-                             seed_hosts := SeedHosts} = St, Topic, MaxPartitions) ->
+                             seed_hosts := SeedHosts} = St, TopicOrAlias, MaxPartitions) ->
+  Topic = get_topic(TopicOrAlias),
   case get_metadata(SeedHosts, ConnConfig, Topic, []) of
     {ok, {ConnPid, {Brokers, PartitionMetaList}}} ->
-      ensure_leader_connections3(St, Topic, ConnPid, Brokers, PartitionMetaList, MaxPartitions);
+      ensure_leader_connections3(St, TopicOrAlias, ConnPid, Brokers, PartitionMetaList, MaxPartitions);
     {error, Errors} ->
-      log_warn(failed_to_fetch_metadata, #{topic => Topic, errors => Errors}),
+      log_warn(failed_to_fetch_metadata, #{topic => get_topic(TopicOrAlias), alias => get_alias(TopicOrAlias), errors => Errors}),
       {error, failed_to_fetch_metadata}
   end.
 
-ensure_leader_connections3(#{metadata_ts := MetadataTs} = St0, Topic,
+-spec ensure_leader_connections3(state(), topic_or_alias(), pid(), _Brokers,
+                                 _PartitionMetaList, max_partitions()) ->
+          {ok, state()}.
+ensure_leader_connections3(#{metadata_ts := MetadataTs} = St0, TopicOrAlias,
                            ConnPid, Brokers, PartitionMetaList0, MaxPartitions) ->
   PartitionMetaList = limit_partitions_count(PartitionMetaList0, MaxPartitions),
   St = lists:foldl(fun(PartitionMeta, StIn) ->
-                       ensure_leader_connection(StIn, Brokers, Topic, PartitionMeta)
+                       ensure_leader_connection(StIn, Brokers, TopicOrAlias, PartitionMeta)
                    end, St0, PartitionMetaList),
-  {ok, St#{metadata_ts := MetadataTs#{Topic => erlang:timestamp()},
+  {ok, St#{metadata_ts := MetadataTs#{TopicOrAlias => erlang:timestamp()},
            metadata_conn => ConnPid
           }}.
 
@@ -342,19 +379,25 @@ limit_partitions_count(PartitionMetaList, _) ->
 %% This function ensures each Topic-Partition pair has a connection record
 %% either a pid when the leader is healthy, or the error reason
 %% if failed to discover the leader or failed to connect to the leader
-ensure_leader_connection(St, Brokers, Topic, P_Meta) ->
+-spec ensure_leader_connection(state(), _Brokers, topic_or_alias(), _PartitionMetaList) -> state().
+ensure_leader_connection(St, Brokers, TopicOrAlias, P_Meta) ->
   PartitionNum = kpro:find(partition_index, P_Meta),
   ErrorCode = kpro:find(error_code, P_Meta),
   case ErrorCode =:= ?no_error of
     true ->
-      do_ensure_leader_connection(St, Brokers, Topic, PartitionNum, P_Meta);
+      do_ensure_leader_connection(St, Brokers, TopicOrAlias, PartitionNum, P_Meta);
     false ->
-      maybe_disconnect_old_leader(St, Topic, PartitionNum, ErrorCode)
+      maybe_disconnect_old_leader(St, TopicOrAlias, PartitionNum, ErrorCode)
   end.
 
+-spec do_ensure_leader_connection(state(), _Brokers, topic_or_alias(), _Partition, _PartitionMetaList) ->
+          state().
 do_ensure_leader_connection(#{conn_config := ConnConfig,
-                              conns := Connections0
-                             } = St0, Brokers, Topic, PartitionNum, P_Meta) ->
+                              conns := Connections0,
+                              known_topics := KnownTopics0
+                             } = St0, Brokers, TopicOrAlias, PartitionNum, P_Meta) ->
+  Topic = get_topic(TopicOrAlias),
+  Alias = get_alias(TopicOrAlias),
   LeaderBrokerId = kpro:find(leader_id, P_Meta),
   {_, Host} = lists:keyfind(LeaderBrokerId, 1, Brokers),
   Strategy = get_connection_strategy(St0),
@@ -373,7 +416,13 @@ do_ensure_leader_connection(#{conn_config := ConnConfig,
       false ->
         add_conn(do_connect(Host, ConnConfig), ConnId, Connections0)
     end,
-  St = St0#{conns := Connections},
+  KnownTopics =
+        maps:update_with(
+          Topic,
+          fun(KnownAliases) -> KnownAliases#{Alias => true} end,
+          #{Alias => true},
+          KnownTopics0),
+  St = St0#{conns := Connections, known_topics := KnownTopics},
   Leaders0 = maps:get(leaders, St0, #{}),
   case Strategy of
     per_broker ->
@@ -384,7 +433,8 @@ do_ensure_leader_connection(#{conn_config := ConnConfig,
   end.
 
 %% Handle error code in partition metadata.
-maybe_disconnect_old_leader(#{conns := Connections} = St, Topic, PartitionNum, ErrorCode) ->
+maybe_disconnect_old_leader(#{conns := Connections} = St, TopicOrAlias, PartitionNum, ErrorCode) ->
+  Topic = get_topic(TopicOrAlias),
   Strategy = get_connection_strategy(St),
   case Strategy of
     per_partition ->
@@ -446,12 +496,16 @@ split_config(Config) ->
   {ConnCfg, MyCfg} = lists:partition(Pred, maps:to_list(Config)),
   {maps:from_list(ConnCfg), maps:from_list(MyCfg)}.
 
+-spec get_metadata([_Host], _ConnConfig, topic()) ->
+          {ok, {pid(), term()}} | {error, term()}.
 get_metadata(Hosts, _ConnectFun, _Topic) when Hosts =:= [] ->
   {error, no_hosts};
 get_metadata(Hosts, ConnectFun, Topic) ->
   get_metadata(Hosts, ConnectFun, Topic, []).
 
-get_metadata([], _ConnectFun, _Topic, Errors) ->
+-spec get_metadata([_Host], _ConnConfig, topic(), [Error]) ->
+          {ok, {pid(), term()}} | {error, [Error] | term()}.
+get_metadata([], _ConnConfig, _Topic, Errors) ->
   {error, Errors};
 get_metadata([Host | Rest], ConnConfig, Topic, Errors) ->
   case do_connect(Host, ConnConfig) of
@@ -469,6 +523,8 @@ get_metadata([Host | Rest], ConnConfig, Topic, Errors) ->
       get_metadata(Rest, ConnConfig, Topic, [Reason | Errors])
   end.
 
+-spec do_get_metadata(connection(), topic(), timeout()) ->
+          {ok, {_Brokers, _Partitions}} | {error, term()}.
 do_get_metadata(Connection, Topic, Timeout) ->
   case kpro:get_api_versions(Connection) of
     {ok, Vsns} ->
@@ -478,6 +534,7 @@ do_get_metadata(Connection, Topic, Timeout) ->
       {error, Reason}
   end.
 
+-spec do_get_metadata2(_Vsn, connection(), topic(), timeout()) -> {ok, {_, _}} | {error, term()}.
 do_get_metadata2(Vsn, Connection, Topic, Timeout) ->
   Req = kpro_req_lib:metadata(Vsn, [Topic], _IsAutoCreateAllowed = false),
   case kpro:request_sync(Connection, Req, Timeout) of
@@ -561,3 +618,15 @@ bin(X) ->
         {error, _} -> bin(io_lib:format("~0p", [X]));
         Addr -> bin(Addr)
     end.
+
+-spec get_topic(topic_or_alias()) -> topic().
+get_topic(?ALIASED_TOPIC(_Alias, Topic)) -> Topic;
+get_topic(Topic) -> Topic.
+
+-spec get_alias(topic_or_alias()) -> producer_alias().
+get_alias(?ALIASED_TOPIC(Alias, _Topic)) -> Alias;
+get_alias(_Topic) -> ?NO_ALIAS.
+
+-spec ensure_has_alias(topic_or_alias()) -> alias_and_topic().
+ensure_has_alias(?ALIASED_TOPIC(Alias, Topic)) -> {Alias, Topic};
+ensure_has_alias(Topic) -> ?ALIASED_TOPIC(?NO_ALIAS, Topic).

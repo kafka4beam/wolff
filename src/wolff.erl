@@ -14,6 +14,8 @@
 
 -module(wolff).
 
+-include("wolff.hrl").
+
 %% Supervised client management APIs
 -export([ensure_supervised_client/3,
          stop_and_delete_supervised_client/1
@@ -26,10 +28,7 @@
 
 %% Supervised producer management APIs
 -export([ensure_supervised_producers/3,
-         stop_and_delete_supervised_producers/1,
-         stop_and_delete_supervised_producers/2,
-         %% /3 is deprecated, call /2 instead
-         stop_and_delete_supervised_producers/3
+         stop_and_delete_supervised_producers/1
         ]).
 
 %% Messaging APIs
@@ -49,7 +48,6 @@
               name/0, offset_reply/0, topic/0]).
 
 -deprecated({check_if_topic_exists, 3}).
--deprecated({stop_and_delete_supervised_producers, 3}).
 
 -type client_id() :: binary().
 -type host() :: kpro:endpoint().
@@ -96,15 +94,6 @@ stop_producers(Producers) ->
   {ok, producers()} | {error, any()}.
 ensure_supervised_producers(ClientId, Topic, ProducerCfg) ->
   wolff_producers:start_supervised(ClientId, Topic, ProducerCfg).
-
-%% @hidden Deprecated.
--spec stop_and_delete_supervised_producers(client_id(), topic(), name()) -> ok.
-stop_and_delete_supervised_producers(ClientId, Topic, _Name) ->
-    stop_and_delete_supervised_producers(ClientId, Topic).
-
-%% @doc Ensure supervised producers are stopped then deleted.
-stop_and_delete_supervised_producers(ClientId, Topic) ->
-  wolff_producers:stop_supervised(ClientId, Topic).
 
 %% @doc Ensure supervised producers are stopped then deleted.
 -spec stop_and_delete_supervised_producers(wolff_producers:producers()) -> ok.
