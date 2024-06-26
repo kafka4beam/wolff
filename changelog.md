@@ -1,4 +1,4 @@
-* 1.10.6
+* 2.0.0
   - Added the `alias` producer config option to make producers to the same topic be independent.
 
 * 1.10.4 (merge 1.5.14)
