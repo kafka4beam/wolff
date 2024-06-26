@@ -247,13 +247,13 @@ pick_partition(Count, roundrobin, _) ->
 pick_partition(Count, first_key_dispatch, [#{key := Key} | _]) ->
   erlang:phash2(Key) rem Count.
 
--spec init({wolff:client_id(), topic(), config()}) -> {ok, map()}.
-init({ClientId, Topic, Config}) ->
+-spec init({wolff:client_id(), topic_or_alias(), config()}) -> {ok, map()}.
+init({ClientId, TopicOrAlias, Config}) ->
   erlang:process_flag(trap_exit, true),
   self() ! ?rediscover_client,
   {ok, #{client_id => ClientId,
          client_pid => false,
-         topic => Topic,
+         topic => TopicOrAlias,
          config => Config,
          producers_status => ?not_initialized,
          refresh_tref => start_partition_refresh_timer(Config)
