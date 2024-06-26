@@ -264,9 +264,9 @@ stop_with_name_test() ->
                   reconnect_delay_ms => 0,
                   name => Name
                  },
-  {ok, _} = wolff:ensure_supervised_producers(ClientId, Topic, ProducerCfg),
+  {ok, Producers} = wolff:ensure_supervised_producers(ClientId, Topic, ProducerCfg),
   %% cleanup
-  ok = wolff:stop_and_delete_supervised_producers(ClientId, Topic),
+  ok = wolff:stop_and_delete_supervised_producers(Producers),
   ?assertEqual([], supervisor:which_children(wolff_producers_sup)),
   ok = wolff:stop_and_delete_supervised_client(ClientId),
   ?assertEqual([], supervisor:which_children(wolff_client_sup)),
@@ -325,7 +325,6 @@ non_existing_topic_test() ->
   {ok, _ClientPid} = wolff:ensure_supervised_client(ClientId, ?HOSTS, ClientCfg),
   ?assertMatch({error, _}, wolff:ensure_supervised_producers(ClientId, Topic, #{name => ?FUNCTION_NAME})),
   ?assertMatch([], supervisor:which_children(wolff_producers_sup)),
-  ok = wolff:stop_and_delete_supervised_producers(ClientId, Topic, ?FUNCTION_NAME),
   ok = wolff:stop_and_delete_supervised_client(ClientId),
   ok.
 
@@ -336,7 +335,6 @@ start_producers_with_dead_client_test() ->
   {ok, _} = application:ensure_all_started(wolff),
   ?assertMatch({error, _}, wolff:ensure_supervised_producers(<<"never-started">>, Topic, #{name => ?FUNCTION_NAME})),
   ?assertMatch([], supervisor:which_children(wolff_producers_sup)),
-  ok = wolff:stop_and_delete_supervised_producers(ClientId, Topic, ?FUNCTION_NAME),
   ok = wolff:stop_and_delete_supervised_client(ClientId),
   ok.
 
