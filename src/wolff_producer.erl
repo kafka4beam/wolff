@@ -36,7 +36,8 @@
 -type topic() :: kpro:topic().
 -type partition() :: kpro:partition().
 -type offset_reply() :: wolff:offset_reply().
--type config_key() :: replayq_dir |
+-type config_key() :: alias |
+                      replayq_dir |
                       replayq_max_total_bytes |
                       replayq_seg_bytes |
                       replayq_offload_mode |

@@ -46,7 +46,7 @@
 -type topic_or_alias() :: wolff_client:topic_or_alias().
 -type partition() :: kpro:partition().
 -type config_key() :: name | partitioner | partition_count_refresh_interval_seconds |
-                      alias | wolff_producer:config_key().
+                      wolff_producer:config_key().
 -type config() :: #{config_key() => term()}.
 -type partitioner() :: random %% default
                      | roundrobin
