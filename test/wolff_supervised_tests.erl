@@ -1,5 +1,6 @@
 -module(wolff_supervised_tests).
 
+-include("wolff.hrl").
 -include_lib("eunit/include/eunit.hrl").
 -include_lib("kafka_protocol/include/kpro.hrl").
 
@@ -84,14 +85,14 @@ different_producers_same_topic_test() ->
   {ok, _ClientPid} = wolff:ensure_supervised_client(ClientId, ?HOSTS, ClientCfg),
   Topic = <<"test-topic">>,
   ProducerName0 = <<"p0">>,
-  Alias0 = <<"a0">>,
-  ProducerCfg0 = (producer_config(ProducerName0))#{required_acks => all_isr, alias => Alias0},
+  Group0 = <<"a0">>,
+  ProducerCfg0 = (producer_config(ProducerName0))#{required_acks => all_isr, group => Group0},
   {ok, Producers0} = wolff:ensure_supervised_producers(ClientId, Topic, ProducerCfg0),
   ?assertEqual({ok, Producers0},
                wolff:ensure_supervised_producers(ClientId, <<"test-topic">>, ProducerCfg0)),
   ProducerName1 = <<"p1">>,
-  Alias1 = <<"a1">>,
-  ProducerCfg1 = (producer_config(ProducerName1))#{required_acks => all_isr, alias => Alias1},
+  Group1 = <<"a1">>,
+  ProducerCfg1 = (producer_config(ProducerName1))#{required_acks => all_isr, group => Group1},
   {ok, Producers1} = wolff:ensure_supervised_producers(ClientId, Topic, ProducerCfg1),
   ?assertEqual({ok, Producers0},
                wolff:ensure_supervised_producers(ClientId, <<"test-topic">>, ProducerCfg0)),
@@ -103,12 +104,14 @@ different_producers_same_topic_test() ->
   receive acked -> ok end,
   {_Partition1A, _ProducerPid1A} = wolff:send(Producers1, [Msg], AckFun),
   receive acked -> ok end,
-  %% Each replayq dir should be namespaced by the alias.
+  %% Each replayq dir should be namespaced by the group
   #{replayq_dir := BaseDir} = ProducerCfg0,
   {ok, Files} = file:list_dir(BaseDir),
+  Dir0 = <<Group0/binary, $_, Topic/binary>>,
+  Dir1 = <<Group1/binary, $_, Topic/binary>>,
   ReplayQDirs = [File || File <- Files,
                          filelib:is_dir(filename:join([BaseDir, File])),
-                         lists:member(list_to_binary(File), [Alias0, Alias1])],
+                         lists:member(list_to_binary(File), [Dir0, Dir1])],
   ?assertMatch([_, _], ReplayQDirs, #{base_dir => Files}),
   %% We now stop one of the producers.  The other should keep working.
   ok = wolff:stop_and_delete_supervised_producers(Producers0),
@@ -184,7 +187,7 @@ max_partitions_test() ->
                  },
   {ok, Producers} = wolff:ensure_supervised_producers(ClientId, Topic, ProducerCfg),
   %% the topic has two partitions, but limited only to started one producer
-  ?assertMatch([_], wolff_producers:find_producers_by_client_topic(ClientId, Topic)),
+  ?assertMatch([_], wolff_producers:find_producers_by_client_topic(ClientId, ?NO_GROUP, Topic)),
   %% cleanup
   ok = wolff:stop_and_delete_supervised_producers(Producers),
   ?assertEqual([], supervisor:which_children(wolff_producers_sup)),
@@ -221,7 +224,7 @@ producer_restart_test() ->
                   name => ?FUNCTION_NAME
                  },
   {ok, Producers} = wolff:ensure_supervised_producers(ClientId, Topic, ProducerCfg),
-  GetPid = fun() -> {ok, Pid} = wolff_producers:find_producer_by_partition(ClientId, Topic, Partition), Pid end,
+  GetPid = fun() -> {ok, Pid} = wolff_producers:find_producer_by_partition(ClientId, ?NO_GROUP, Topic, Partition), Pid end,
   Producer0 = GetPid(),
   Msg0 = #{key => ?KEY, value => <<"0">>},
   {0, Offset0} = wolff_producer:send_sync(Producer0, [Msg0], 2000),
@@ -286,7 +289,7 @@ test_partition_count_refresh() ->
   {ok, _} = application:ensure_all_started(wolff),
   ClientCfg = #{},
   {ok, ClientPid} = wolff:ensure_supervised_client(ClientId, ?HOSTS, ClientCfg),
-  {ok, Connections0} = wolff_client:get_leader_connections(ClientPid, Topic),
+  {ok, Connections0} = get_leader_connections(ClientPid, Topic),
   Partitions0 = length(Connections0),
   ?assertEqual(Partitions0, count_partitions(Topic)),
   %% always send to the last partition
@@ -472,7 +475,7 @@ wait_for_pid(F) ->
   end.
 
 fetch_and_match(ClientPid, Topic, Partition, Offset, ExpectedMsgs) ->
-  {ok, Conns} = wolff_client:get_leader_connections(ClientPid, Topic),
+  {ok, Conns} = get_leader_connections(ClientPid, Topic),
   {_, Conn} = lists:keyfind(Partition, 1, Conns),
   Msgs0 = fetch(Conn, Topic, Partition, Offset, 1000),
   Msgs = dedup(Msgs0, undefined),
@@ -556,3 +559,6 @@ assert_last_event_is_zero(Key, Tab) ->
           throw({unexpected_eventual_state, X})
       end
   end.
+
+get_leader_connections(Client, Topic) ->
+    wolff_client:get_leader_connections(Client, ?NO_GROUP, Topic).

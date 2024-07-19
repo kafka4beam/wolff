@@ -36,7 +36,7 @@
 -type topic() :: kpro:topic().
 -type partition() :: kpro:partition().
 -type offset_reply() :: wolff:offset_reply().
--type config_key() :: alias |
+-type config_key() :: group |
                       replayq_dir |
                       replayq_max_total_bytes |
                       replayq_seg_bytes |
@@ -51,7 +51,7 @@
                       telemetry_meta_data |
                       max_partitions.
 
--type config_in() :: #{alias => wolff_client:producer_alias(),
+-type config_in() :: #{group => wolff_client:producer_group(),
                        replayq_dir => string() | binary(),
                        replayq_max_total_bytes => pos_integer(),
                        replayq_seg_bytes => pos_integer(),
@@ -69,7 +69,7 @@
                       }.
 
 %% Some keys are removed from `config_in()'.
--type config_state() :: #{alias => wolff_client:topic_or_alias(),
+-type config_state() :: #{group => wolff_client:producer_group(),
                           replayq_max_total_bytes => pos_integer(),
                           replayq_offload_mode => boolean(),
                           required_acks => kpro:required_acks(),
@@ -217,16 +217,17 @@ do_init(#{client_id := ClientId,
           partition := Partition,
           config := Config0
          } = St) ->
-  AliasPathSegment0 = case maps:find(alias, Config0) of
-                         {ok, Alias} when is_binary(Alias) -> Alias;
-                         _ -> Topic
-                     end,
-  AliasPathSegment = escape(AliasPathSegment0),
+  PathSegment0 =
+    case maps:find(group, Config0) of
+      {ok, Group} when is_binary(Group) -> <<Group/binary, $_, Topic/binary>>;
+      _ -> Topic
+    end,
+  PathSegment = escape(PathSegment0),
   QCfg = case maps:get(replayq_dir, Config0, false) of
            false ->
              #{mem_only => true};
            BaseDir ->
-             Dir = filename:join([BaseDir, AliasPathSegment, integer_to_list(Partition)]),
+             Dir = filename:join([BaseDir, PathSegment, integer_to_list(Partition)]),
              SegBytes = maps:get(replayq_seg_bytes, Config0, ?DEFAULT_REPLAYQ_SEG_BYTES),
              Offload = maps:get(replayq_offload_mode, Config0, false),
              #{dir => Dir, seg_bytes => SegBytes, offload => Offload}
@@ -735,9 +736,8 @@ ensure_delayed_reconnect(#{config := #{reconnect_delay_ms := Delay0} = Config,
     end,
   case wolff_client_sup:find_client(ClientId) of
     {ok, ClientPid} ->
-      Alias = maps:get(alias, Config, ?NO_ALIAS),
-      AliasTopic = ?ALIASED_TOPIC(Alias, Topic),
-      Args = [ClientPid, AliasTopic, Partition, self(), MaxPartitions],
+      Group = maps:get(group, Config, ?NO_GROUP),
+      Args = [ClientPid, Group, Topic, Partition, self(), MaxPartitions],
       {ok, Tref} = timer:apply_after(Delay, wolff_client, recv_leader_connection, Args),
       St#{reconnect_timer => Tref, reconnect_attempts => Attempts + 1};
     {error, Reason} ->

@@ -16,13 +16,9 @@
 
 -behaviour(supervisor).
 
--include("wolff.hrl").
-
 -export([start_link/0, init/1]).
 
 -export([ensure_present/3, ensure_absence/2]).
-
--type topic_or_alias() :: wolff_producers:topic_or_alias().
 
 -define(SUPERVISOR, ?MODULE).
 
@@ -38,10 +34,10 @@ init([]) ->
   {ok, {SupFlags, Children}}.
 
 %% ensure a client started under supervisor
--spec ensure_present(wolff:client_id(), kpro:topic(), wolff_producers:config()) ->
+-spec ensure_present(wolff:client_id(), wolff_producers:id(), wolff_producers:config()) ->
   {ok, pid()} | {error, term()}.
-ensure_present(ClientId, Topic, Config) ->
-  ChildSpec = child_spec(ClientId, Topic, Config),
+ensure_present(ClientId, ID, Config) ->
+  ChildSpec = child_spec(ClientId, ID, Config),
   case supervisor:start_child(?SUPERVISOR, ChildSpec) of
     {ok, Pid} -> {ok, Pid};
     {error, {already_started, Pid}} -> {ok, Pid};
@@ -49,25 +45,23 @@ ensure_present(ClientId, Topic, Config) ->
   end.
 
 %% ensure client stopped and deleted under supervisor
--spec ensure_absence(wolff:client_id(), topic_or_alias()) -> ok.
-ensure_absence(ClientId, TopicOrAlias) ->
-  Id = worker_id(ClientId, TopicOrAlias),
+-spec ensure_absence(wolff:client_id(), wolff_producers:id()) -> ok.
+ensure_absence(ClientId, ID) ->
+  Id = worker_id(ClientId, ID),
   case supervisor:terminate_child(?SUPERVISOR, Id) of
     ok ->
-      ok = wolff_producers:cleanup_workers_table(ClientId, TopicOrAlias),
+      ok = wolff_producers:cleanup_workers_table(ClientId, ID),
       ok = supervisor:delete_child(?SUPERVISOR, Id);
     {error, not_found} ->
       ok
   end.
 
-child_spec(ClientId, Topic, Config) ->
-  Alias = maps:get(alias, Config, ?NO_ALIAS),
-  AliasTopic = {Alias, Topic},
-  #{id => worker_id(ClientId, AliasTopic),
-    start => {wolff_producers, start_link, [ClientId, AliasTopic, Config]},
+child_spec(ClientId, ID, Config) ->
+  #{id => worker_id(ClientId, ID),
+    start => {wolff_producers, start_link, [ClientId, ID, Config]},
     restart => transient,
     type => worker
    }.
 
-worker_id(ClientId, TopicOrAlias) ->
-  {ClientId, TopicOrAlias}.
+worker_id(ClientId, ID) ->
+  {ClientId, ID}.

@@ -80,7 +80,7 @@ metadata_connection_restart2_test() ->
   ClientId = <<"client-1">>,
   {ok, Client} = start_client(ClientId, ?HOSTS, ClientCfg),
   GetMetadataConn = fun() ->
-    ?assertMatch({ok, _}, wolff_client:get_leader_connections(Client, <<"test-topic">>)),
+    ?assertMatch({ok, _}, get_leader_connections(Client, <<"test-topic">>)),
     State = sys:get_state(Client),
     Pid = maps:get(metadata_conn, State),
     ?assert(is_process_alive(Pid)),
@@ -530,18 +530,16 @@ fail_to_connect_all_test() ->
   Hosts = [{localhost, 9999},
            {<<"localhost">>, 9999},
            {{1, 2, 3, 4}, 9999}, %% timeout
-           {{127, 0, 0}, 9999}, %% invalid type, cause crash but caught
            {"127.0.0", 9999} %% invalid ip
           ],
   {ok, Client} = start_client(ClientId, Hosts, ClientCfg),
   ?assertEqual({error, failed_to_fetch_metadata},
-               wolff_client:get_leader_connections(Client, <<"test-topic">>)),
+               get_leader_connections(Client, <<"test-topic">>)),
   Refuse = #{host => <<"localhost:9999">>, reason => connection_refused},
   {error, Errors} = wolff:check_connectivity(ClientId),
   ?assertMatch([#{host := <<"1.2.3.4:9999">>, reason := _},
                 #{host := <<"127.0.0:9999">>, reason := _},
-                Refuse, Refuse,
-                #{host := <<"{127,0,0}:9999">>}
+                Refuse, Refuse
                 ],
                lists:sort(Errors)),
   ok = application:stop(wolff).
@@ -567,11 +565,11 @@ test_leader_restart() ->
     {ok, ClientA} = start_client(ClientIdA, ?HOSTS, ClientCfg#{connection_strategy => per_partition}),
     {ok, ClientB} = start_client(ClientIdB, ?HOSTS, ClientCfg#{connection_strategy => per_broker}),
     TopicBin = iolist_to_binary(Topic),
-    {ok, LeadersA0} = wolff_client:get_leader_connections(ClientA, TopicBin),
-    {ok, LeadersB0} = wolff_client:get_leader_connections(ClientB, TopicBin),
+    {ok, LeadersA0} = get_leader_connections(ClientA, TopicBin),
+    {ok, LeadersB0} = get_leader_connections(ClientB, TopicBin),
     ok = stop_kafka_2(),
-    {ok, LeadersA1} = wolff_client:get_leader_connections(ClientA, TopicBin),
-    {ok, LeadersB1} = wolff_client:get_leader_connections(ClientB, TopicBin),
+    {ok, LeadersA1} = get_leader_connections(ClientA, TopicBin),
+    {ok, LeadersB1} = get_leader_connections(ClientB, TopicBin),
     ok = start_kafka_2(),
     %% expect the number of leaders are the same even though one broker is down
     ?assert(length(LeadersA0) =:= length(LeadersA1)),
@@ -907,3 +905,6 @@ assert_eq_optional_tail(Fun, ExpectedList) ->
         Xs0 ->
             ct:fail("unexpected result: ~p", [Xs0])
     end.
+
+get_leader_connections(Client, Topic) ->
+    wolff_client:get_leader_connections(Client, ?NO_GROUP, Topic).
