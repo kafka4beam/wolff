@@ -45,10 +45,11 @@
 -export([get_producer/2]).
 
 -export_type([client_id/0, host/0, producers/0, msg/0, ack_fun/0, partitioner/0,
-              name/0, offset_reply/0, topic/0]).
+              name/0, offset_reply/0, topic/0, gname/0]).
 
 -deprecated({check_if_topic_exists, 3}).
 
+-type gname() :: wolff_producers:gname().
 -type client_id() :: binary().
 -type host() :: kpro:endpoint().
 -type topic() :: kpro:topic().

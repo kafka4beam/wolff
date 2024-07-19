@@ -1,3 +1,7 @@
+* 3.0.0
+  - Deleted round_robin partition strategy.
+  - Change 'alias' to 'group'.
+
 * 2.0.0
   - Added the `alias` producer config option to make producers to the same topic be independent.
 
