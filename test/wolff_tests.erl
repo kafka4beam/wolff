@@ -227,7 +227,6 @@ test_connection_restart() ->
   ProducerCfg0 = producer_config(),
   %% allow message linger, so we have time to kill the connection
   ProducerCfg = ProducerCfg0#{max_linger_ms => 200,
-                              partitioner => roundrobin,
                               reconnect_delay_ms => 0
                              },
   {ok, Producers} = wolff:start_producers(Client, <<"test-topic">>, ProducerCfg),
