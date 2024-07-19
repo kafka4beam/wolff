@@ -167,8 +167,6 @@ wolff:send(Producers, [Msg], AckFun).
 * `compression`: `no_compression` (default) `snappy` or `gzip`.
 
 * `partitioner`: default `random`. other possible values are:
-   `roundrobin`: Starts from partition `0`, next partition to use is saved in caller's
-   process dictionary.
    `first_key_dispatch`: `erlang:phash2(Key) rem PartitionCount` where Key is the `key`
    field of the first message in the batch to produce.
    `fun((PartitionCount, [msg()]) -> partition())`: Caller defined callback.
