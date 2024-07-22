@@ -19,7 +19,7 @@
 -export([start_link/3]).
 -export([start_linked_producers/3, stop_linked/1]).
 -export([start_supervised/3, stop_supervised/1, stop_supervised/2]).
--export([pick_producer/2, lookup_producer/2, cleanup_workers_table/2]).
+-export([pick_producer/2, lookup_producer/2, cleanup_workers_table/1]).
 
 %% gen_server callbacks
 -export([code_change/3, handle_call/3, handle_cast/2, handle_info/2, init/1, terminate/2]).
@@ -51,8 +51,9 @@
           topic := topic()
          }.
 
--type gname() :: wolff_client:producer_group().
--type id() :: ?GROUPED_TOPIC(gname(), topic()).
+-type client_id() :: wolff:client_id().
+-type gname() :: ?NO_GROUP | wolff_client:producer_group().
+-type id() :: ?NS_TOPIC(client_id() | gname(), topic()).
 -type topic() :: kpro:topic().
 -type partition() :: kpro:partition().
 -type config_key() :: name | partitioner | partition_count_refresh_interval_seconds |
@@ -130,14 +131,15 @@ get_group(ProducerCfg) ->
 -spec start_supervised(wolff:client_id(), topic(), config()) -> {ok, producers()} | {error, any()}.
 start_supervised(ClientId, Topic, ProducerCfg) ->
   Group = get_group(ProducerCfg),
-  ID = ?GROUPED_TOPIC(Group, Topic),
+  NS = resolve_ns(ClientId, Group),
+  ID = ?NS_TOPIC(NS, Topic),
   case wolff_producers_sup:ensure_present(ClientId, ID, ProducerCfg) of
     {ok, Pid} ->
       case gen_server:call(Pid, get_status, infinity) of
         #{Topic := ?not_initialized(Reason)} ->
           %% This means wolff_client failed to fetch metadata
           %% for this topic.
-          _ = wolff_producers_sup:ensure_absence(ClientId, ID),
+          _ = wolff_producers_sup:ensure_absence(ID),
           {error, Reason};
         #{Topic := ?initialized} ->
           {ok, #{client_id => ClientId,
@@ -153,16 +155,16 @@ start_supervised(ClientId, Topic, ProducerCfg) ->
 %% @doc Ensure workers and clean up meta data.
 -spec stop_supervised(producers()) -> ok.
 stop_supervised(#{client_id := ClientId, group := Group, topic := Topic}) ->
-  ID = ?GROUPED_TOPIC(Group, Topic),
+  ID = ?NS_TOPIC(resolve_ns(ClientId, Group), Topic),
   stop_supervised(ClientId, ID).
 
 %% @doc Ensure workers and clean up meta data.
 -spec stop_supervised(wolff:client_id(), id()) -> ok.
-stop_supervised(ClientId, ?GROUPED_TOPIC(Group, Topic) = ID) ->
-  wolff_producers_sup:ensure_absence(ClientId, ID),
+stop_supervised(ClientId, ?NS_TOPIC(NS, Topic) = ID) ->
+  wolff_producers_sup:ensure_absence(ID),
   case wolff_client_sup:find_client(ClientId) of
     {ok, Pid} ->
-       ok = wolff_client:delete_producers_metadata(Pid, Group, Topic);
+       ok = wolff_client:delete_producers_metadata(Pid, NS, Topic);
     {error, _} ->
        %% not running
        ok
@@ -245,8 +247,8 @@ pick_partition(Count, random, _) ->
 pick_partition(Count, first_key_dispatch, [#{key := Key} | _]) ->
   erlang:phash2(Key) rem Count.
 
--spec init({wolff:client_id(), ?GROUPED_TOPIC(gname(), topic()), config()}) -> {ok, map()}.
-init({ClientId, ?GROUPED_TOPIC(_Group, Topic), Config}) ->
+-spec init({wolff:client_id(), id(), config()}) -> {ok, map()}.
+init({ClientId, ?NS_TOPIC(_, Topic), Config}) ->
   erlang:process_flag(trap_exit, true),
   self() ! ?rediscover_client,
   {ok, #{client_id => ClientId,
@@ -296,28 +298,24 @@ handle_info({'DOWN', _, process, Pid, Reason}, #{client_id := ClientId,
 handle_info({'EXIT', Pid, Reason},
             #{client_id := ClientId,
               client_pid := ClientPid,
-              producers_status := Status,
               config := Config
              } = St) ->
-  case find_partition_by_pid(Pid) of
+  case find_topic_partition_by_pid(Pid) of
     [] ->
       %% this should not happen, hence error level
       log_error("unknown_EXIT_message",
                 #{pid => Pid,
                   reason => Reason,
                   producer_id => producer_id(St)});
-    [{Group, Topic, Partition}] ->
-      %% assert
+    [{Topic, Partition}] ->
       Group = get_group(Config),
-      %% assert
-      true = is_map_key(Topic, Status),
       case is_alive(ClientPid) of
         true ->
           %% wolff_producer is not designed to crash & restart
           %% if this happens, it's likely a bug in wolff_producer module
           log_error("producer_down",
-                    #{topic => Topic,
-                      group => Group,
+                    #{producer_id => producer_id(St),
+                      topic => Topic,
                       partition => Partition,
                       partition_worker => Pid,
                       reason => Reason}),
@@ -345,9 +343,9 @@ handle_cast(Cast, St) ->
 code_change(_OldVsn, St, _Extra) ->
   {ok, St}.
 
-terminate(_, #{client_id := ClientId} = St) ->
+terminate(_, #{} = St) ->
   ID = supervisor_child_id(St),
-  ok = cleanup_workers_table(ClientId, ID).
+  ok = cleanup_workers_table(ID).
 
 ensure_rediscover_client_timer(#{?rediscover_client_tref := false} = St) ->
   Tref = erlang:send_after(?rediscover_client_delay, self(), ?rediscover_client),
@@ -382,7 +380,7 @@ init_producers(_St, [], OK, ERR) ->
       erlang:send_after(?init_producers_delay, self(), ?init_producers)
   end,
   maps:merge(OK, ERR);
-init_producers(St, [{Topic, ?not_initialized(pending)} | More], OK, ERR) ->
+init_producers(St, [{Topic, ?not_initialized(_)} | More], OK, ERR) ->
   #{client_id := ClientId, config := Config} = St,
   case start_linked_producers(ClientId, Topic, Config) of
     {ok, #{workers := Workers}} ->
@@ -417,37 +415,40 @@ maybe_restart_producers(#{client_id := ClientId, config := Config} = St, [{Topic
     end, Producers),
   maybe_restart_producers(St, More).
 
--spec cleanup_workers_table(wolff:client_id(), id()) -> ok.
-cleanup_workers_table(ClientId, ?GROUPED_TOPIC(GName, Topic)) ->
-  Ms = ets:fun2ms(fun({{C, G, T, _}, _}) when C =:= ClientId andalso G =:= GName, T =:= Topic -> true end),
+-spec cleanup_workers_table(id()) -> ok.
+cleanup_workers_table(?NS_TOPIC(NS, Topic)) ->
+  Ms = ets:fun2ms(fun({{N, T, _}, _}) when N =:= NS andalso T =:= Topic -> true end),
   ets:select_delete(?WOLFF_PRODUCERS_GLOBAL_TABLE, Ms),
   ok.
 
 find_producer_by_partition(ClientId, Group, Topic, Partition) when is_integer(Partition) ->
-  case ets:lookup(?WOLFF_PRODUCERS_GLOBAL_TABLE, {ClientId, Group, Topic, Partition}) of
-    [{{_, _, _, _}, Pid}] ->
-      {ok, Pid};
-    [] ->
+  NS = resolve_ns(ClientId, Group),
+  case ets_lookup_val(?WOLFF_PRODUCERS_GLOBAL_TABLE, {NS, Topic, Partition}, false) of
+    false ->
       {error, #{reason => producer_not_found,
                 client => ClientId,
                 topic => Topic,
                 group => Group,
-                partition => Partition}}
+                partition => Partition}};
+    Pid ->
+      {ok, Pid}
   end.
 
 find_producers_by_client_topic(ClientId, Group, Topic) ->
+  NS = resolve_ns(ClientId, Group),
   Ms = ets:fun2ms(
-         fun({{C, G, T, P}, Pid}) when C =:= ClientId andalso G =:= Group andalso T =:= Topic andalso is_integer(P)->
+         fun({{N, T, P}, Pid}) when N =:= NS andalso T =:= Topic andalso is_integer(P)->
                  {P, Pid}
          end),
   ets:select(?WOLFF_PRODUCERS_GLOBAL_TABLE, Ms).
 
-find_partition_by_pid(Pid) ->
-  Ms = ets:fun2ms(fun({{_ClientId, Group, Topic, Partition}, P}) when P =:= Pid -> {Group, Topic, Partition} end),
+find_topic_partition_by_pid(Pid) ->
+  Ms = ets:fun2ms(fun({{_NS, Topic, Partition}, P}) when P =:= Pid -> {Topic, Partition} end),
   ets:select(?WOLFF_PRODUCERS_GLOBAL_TABLE, Ms).
 
 insert_producers(ClientId, Group, Topic, Workers0) ->
-  Workers = lists:map(fun({Partition, Pid}) -> {{ClientId, Group, Topic, Partition}, Pid} end, maps:to_list(Workers0)),
+  NS = resolve_ns(ClientId, Group),
+  Workers = lists:map(fun({Partition, Pid}) -> {{NS, Topic, Partition}, Pid} end, maps:to_list(Workers0)),
   true = ets:insert(?WOLFF_PRODUCERS_GLOBAL_TABLE, Workers),
   ok.
 
@@ -518,21 +519,27 @@ start_new_producers(#{client_id := ClientId,
   end.
 
 -if(OTP_RELEASE >= "26").
-get_partition_cnt(ClientId, Group, Topic) ->
-  ets:lookup_element(?WOLFF_PRODUCERS_GLOBAL_TABLE, {ClientId, Group, Topic, partition_count},
-                     2, ?partition_count_unavailable).
+ets_lookup_val(Tab, Key, Default) ->
+  ets:lookup_element(Tab, Key, 2, Default).
 -else.
-get_partition_cnt(ClientId, Group, Topic) ->
-  try ets:lookup_element(?WOLFF_PRODUCERS_GLOBAL_TABLE, {ClientId, Group, Topic, partition_count},
-                     2)
+ets_lookup_val(Tab, Key, Default) ->
+  try
+    ets:lookup_element(Tab, Key, 2)
   catch
     error:badarg ->
-      ?partition_count_unavailable
+      Default
   end.
 -endif.
 
+get_partition_cnt(ClientId, Group, Topic) ->
+  NS = resolve_ns(ClientId, Group),
+  ets_lookup_val(?WOLFF_PRODUCERS_GLOBAL_TABLE,
+                 {NS, Topic, partition_count},
+                 ?partition_count_unavailable).
+
 put_partition_cnt(ClientId, Group, Topic, Count) ->
-  _ = ets:insert(?WOLFF_PRODUCERS_GLOBAL_TABLE, {{ClientId, Group, Topic, partition_count}, Count}),
+  NS = resolve_ns(ClientId, Group),
+  _ = ets:insert(?WOLFF_PRODUCERS_GLOBAL_TABLE, {{NS, Topic, partition_count}, Count}),
   ok.
 
 ensure_timer_cancelled(Tref) when is_reference(Tref) ->
@@ -547,24 +554,20 @@ supervisor_child_id(St) ->
 producer_id(St) ->
   producer_id(St, readable).
 
-producer_id(#{config := Config, producers_status := Status}, Format) ->
-  Group = get_group(Config),
-  Topics = maps:keys(Status),
-  ID = get_producer_id(Group, Topics),
-  case Format of
-    readable ->
-      case ID of
-        ?GROUPED_TOPIC(?NO_GROUP, Topic) ->
-          Topic;
-        {_, Topic} ->
-          <<Group/binary, $:, Topic/binary>>
-      end;
-    supervisor ->
-      ID
-  end.
+producer_id(#{producers_status := Status} = St, Format) ->
+  NS = resolve_ns(St),
+  [Topic] = maps:keys(Status),
+  producer_id(NS, Topic, Format).
 
-get_producer_id(?NO_GROUP, Topics) ->
-  1 = length(Topics),
-  ?GROUPED_TOPIC(?NO_GROUP, hd(Topics));
-get_producer_id(Group, [Topic]) ->
-  ?GROUPED_TOPIC(Group, Topic).
+producer_id(NS, Topic, readable) ->
+  <<NS/binary, $:, Topic/binary>>;
+producer_id(NS, Topic, supervisor) ->
+  ?NS_TOPIC(NS, Topic).
+
+resolve_ns(#{client_id := ClientId, config := Config}) ->
+    resolve_ns(ClientId, get_group(Config)).
+
+resolve_ns(ClientId, ?NO_GROUP) ->
+    ClientId;
+resolve_ns(_ClientId, Group) ->
+    Group.
