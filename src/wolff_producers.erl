@@ -201,7 +201,7 @@ stop_supervised(ClientId, ?NS_TOPIC(NS, Topic) = ID) ->
           _ when is_binary(NS) ->
             NS
        end,
-       ok = wolff_client:delete_producers_metadata(Pid, Group, Topic);
+       ok = wolff_client:release_leader_conns(Pid, Group, Topic);
     {error, _} ->
        %% not running
        ok

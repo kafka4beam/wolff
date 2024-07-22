@@ -23,7 +23,7 @@
          get_leader_connections/4,
          recv_leader_connection/6,
          get_id/1,
-         delete_producers_metadata/3]).
+         release_leader_conns/3]).
 -export([check_connectivity/1, check_connectivity/2]).
 -export([check_topic_exists_with_client_pid/2]).
 
@@ -152,8 +152,8 @@ safe_call(Pid, Call) ->
 recv_leader_connection(Client, Group, Topic, Partition, Pid, MaxPartitions) ->
   gen_server:cast(Client, {recv_leader_connection, Group, Topic, Partition, Pid, MaxPartitions}).
 
-delete_producers_metadata(Client, Group, Topic) ->
-    gen_server:cast(Client, {delete_producers_metadata, Group, Topic}).
+release_leader_conns(Client, Group, Topic) ->
+    gen_server:cast(Client, {release_leader_conns, Group, Topic}).
 
 init(#{client_id := ClientID} = St) ->
   erlang:process_flag(trap_exit, true),
@@ -212,8 +212,8 @@ handle_cast({recv_leader_connection, Group, Topic, Partition, Caller, MaxConnect
       _ = erlang:send(Caller, ?leader_connection({error, Reason})),
       {noreply, St0}
   end;
-handle_cast({delete_producers_metadata, Group, Topic}, St0) ->
-  St = do_delete_producers_metadata(Group, Topic, St0),
+handle_cast({release_leader_conns, Group, Topic}, St0) ->
+  St = do_release_leader_conns(Group, Topic, St0),
   {noreply, St};
 handle_cast(_Cast, St) ->
   {noreply, St}.
@@ -230,19 +230,20 @@ terminate(_, #{client_id := ClientID, conns := Conns} = St) ->
 
 %% == internals ======================================================
 
-do_delete_producers_metadata(Group, ?DYNAMIC, St) ->
+do_release_leader_conns(Group, ?DYNAMIC, St) ->
   #{known_topics := KnownTopics} = St,
   Topics = maps:keys(KnownTopics),
-  lists:foldl(fun(T, StIn) -> do_delete_producers_metadata(Group, T, StIn) end, St, Topics);
-do_delete_producers_metadata(Group, Topic, St) ->
+  lists:foldl(fun(T, StIn) -> do_release_leader_conns(Group, T, StIn) end, St, Topics);
+do_release_leader_conns(Group, Topic, St) ->
   #{metadata_ts := Topics0,
     conns := Conns0,
-    known_topics := KnownTopics0} = St,
+    known_topics := KnownTopics0
+   } = St,
   case KnownTopics0 of
       #{Topic := #{Group := true} = KnownProducers} when map_size(KnownProducers) =:= 1 ->
           %% Last entry: we may drop the connection metadata
           KnownTopics = maps:remove(Topic, KnownTopics0),
-          Conns = maps:without( [K || K = {K1, _} <- maps:keys(Conns0), K1 =:= Topic], Conns0),
+          Conns = close_connections(Conns0, Topic),
           Topics = maps:remove(Group, Topics0),
           St#{metadata_ts := Topics, conns := Conns, known_topics := KnownTopics};
       #{Topic := #{Group := true} = KnownProducers0} ->
@@ -276,8 +277,28 @@ check_if_topic_exists2(Pid, Topic, Timeout) when is_pid(Pid) ->
       {error, Reason}
   end.
 
+close_connections(Conns, Topic) ->
+  Pred = fun({T, _P}) ->
+             T =:= Topic;
+            (_) ->
+             false
+         end,
+  do_close_connections(maps:to_list(Conns), Pred, #{}).
+
 close_connections(Conns) ->
-  lists:foreach(fun({_, Pid}) -> close_connection(Pid) end, maps:to_list(Conns)).
+  _ = do_close_connections(maps:to_list(Conns), fun(_) -> true end, #{}),
+  ok.
+
+do_close_connections([], _Pred, Acc) ->
+  Acc;
+do_close_connections([{Key, Pid} | More], Pred, Acc) ->
+  case Pred(Key) of
+    true ->
+      _ = close_connection(Pid),
+      do_close_connections(More, Pred, Acc);
+    false ->
+      do_close_connections(More, Pred, Acc#{Key => Pid})
+  end.
 
 close_connection(Conn) when is_pid(Conn) ->
   _ = erlang:spawn(fun() -> do_close_connection(Conn) end),
@@ -327,7 +348,7 @@ is_metadata_fresh(#{metadata_ts := Topics, config := Config}, Topic) ->
   {ok, state()} | {error, any()}.
 ensure_leader_connections(St, Group, Topic, MaxPartitions) ->
   case is_metadata_fresh(St, Topic) of
-    true -> {ok, St};
+    true -> {ok, ensure_group_is_recorded(St, Group, Topic)};
     false -> ensure_leader_connections2(St, Group, Topic, MaxPartitions)
   end.
 
@@ -389,8 +410,7 @@ ensure_leader_connection(St, Brokers, Group, Topic, P_Meta) ->
 -spec do_ensure_leader_connection(state(), _Brokers, producer_group(), topic(), _Partition, _PartitionMetaList) ->
           state().
 do_ensure_leader_connection(#{conn_config := ConnConfig,
-                              conns := Connections0,
-                              known_topics := KnownTopics0
+                              conns := Connections0
                              } = St0, Brokers, Group, Topic, PartitionNum, P_Meta) ->
   LeaderBrokerId = kpro:find(leader_id, P_Meta),
   {_, Host} = lists:keyfind(LeaderBrokerId, 1, Brokers),
@@ -410,14 +430,8 @@ do_ensure_leader_connection(#{conn_config := ConnConfig,
       false ->
         add_conn(do_connect(Host, ConnConfig), ConnId, Connections0)
     end,
-  KnownTopics =
-        maps:update_with(
-          Topic,
-          fun(KnownGroups) -> KnownGroups#{Group => true} end,
-          #{Group => true},
-          KnownTopics0),
-  St = St0#{conns := Connections, known_topics := KnownTopics},
   Leaders0 = maps:get(leaders, St0, #{}),
+  St = ensure_group_is_recorded(St0#{conns := Connections}, Group, Topic),
   case Strategy of
     per_broker ->
       Leaders = Leaders0#{{Topic, PartitionNum} => maps:get(ConnId, Connections)},
@@ -425,6 +439,15 @@ do_ensure_leader_connection(#{conn_config := ConnConfig,
     _ ->
       St
   end.
+
+ensure_group_is_recorded(#{known_topics := KnownTopics0} = St, Group, Topic) ->
+  KnownTopics =
+        maps:update_with(
+          Topic,
+          fun(KnownGroups) -> KnownGroups#{Group => true} end,
+          #{Group => true},
+          KnownTopics0),
+  St#{known_topics := KnownTopics}.
 
 %% Handle error code in partition metadata.
 maybe_disconnect_old_leader(#{conns := Connections} = St, Topic, PartitionNum, ErrorCode) ->

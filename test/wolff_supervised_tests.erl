@@ -118,11 +118,17 @@ different_producers_same_topic_test() ->
                 }, sys:get_state(ClientPid)),
   %% We now stop one of the producers.  The other should keep working.
   ok = wolff:stop_and_delete_supervised_producers(Producers0),
-  %% Some time for `wolff_client:delete_producers_metadata' to be processed.
-  timer:sleep(100),
+  ?assertMatch(#{known_topics := #{Topic := #{Group1 := true}},
+                 conns := #{{Topic, 0} := _}
+                }, sys:get_state(ClientPid)),
+  ?assertMatch(#{}, sys:get_state(ClientPid)),
   {_Partition1B, _ProducerPid1B} = wolff:send(Producers1, [Msg], AckFun),
   receive acked -> ok end,
   ok = wolff:stop_and_delete_supervised_producers(Producers1),
+  ?assertMatch(#{known_topics := Topics,
+                 conns := Conns
+                } when map_size(Topics) =:= 0 andalso map_size(Conns) =:= 0,
+               sys:get_state(ClientPid)),
   ok = wolff:stop_and_delete_supervised_client(ClientId),
   ok = application:stop(wolff),
   ok.
