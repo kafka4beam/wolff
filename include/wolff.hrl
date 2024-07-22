@@ -29,6 +29,7 @@
 
 -define(NS_TOPIC(NS, TOPIC), {NS, TOPIC}).
 -define(NO_GROUP, no_group).
+-define(DYNAMIC, dynamic).
 
 -define(all_partitions, all_partitions).
 

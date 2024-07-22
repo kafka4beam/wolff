@@ -91,10 +91,10 @@ stop_producers(Producers) ->
   wolff_producers:stop_linked(Producers).
 
 %% @doc Ensure supervised producers are started.
--spec ensure_supervised_producers(client_id(), topic(), producers_cfg()) ->
+-spec ensure_supervised_producers(client_id(), topic() | [topic()], producers_cfg()) ->
   {ok, producers()} | {error, any()}.
-ensure_supervised_producers(ClientId, Topic, ProducerCfg) ->
-  wolff_producers:start_supervised(ClientId, Topic, ProducerCfg).
+ensure_supervised_producers(ClientId, Topics, ProducerCfg) ->
+  wolff_producers:start_supervised(ClientId, Topics, ProducerCfg).
 
 %% @doc Ensure supervised producers are stopped then deleted.
 -spec stop_and_delete_supervised_producers(wolff_producers:producers()) -> ok.

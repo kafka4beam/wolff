@@ -20,6 +20,7 @@
 -export([start_linked_producers/3, stop_linked/1]).
 -export([start_supervised/3, stop_supervised/1, stop_supervised/2]).
 -export([pick_producer/2, lookup_producer/2, cleanup_workers_table/1]).
+-export([pick_producer2/3]).
 
 %% gen_server callbacks
 -export([code_change/3, handle_call/3, handle_cast/2, handle_info/2, init/1, terminate/2]).
@@ -40,7 +41,7 @@
         #{partitioner := partitioner(),
           client_id := wolff:client_id(),
           group := gname(),
-          topic := topic()
+          topic := ?DYNAMIC | topic()
          }.
 
 -type linked_topic_producers() ::
@@ -128,12 +129,24 @@ get_group(ProducerCfg) ->
   maps:get(group, ProducerCfg, ?NO_GROUP).
 
 %% @doc Start supervised producers.
--spec start_supervised(wolff:client_id(), topic(), config()) -> {ok, producers()} | {error, any()}.
-start_supervised(ClientId, Topic, ProducerCfg) ->
+-spec start_supervised(wolff:client_id(), topic() | [topic()], config()) -> {ok, producers()} | {error, any()}.
+start_supervised(ClientId, Topic, ProducerCfg) when is_binary(Topic) ->
+  start_supervised(ClientId, [Topic], ProducerCfg);
+start_supervised(ClientId, Topics, ProducerCfg) ->
   Group = get_group(ProducerCfg),
+  Topic = case Topics of
+            [T] -> T;
+            [] -> ?DYNAMIC
+          end,
   NS = resolve_ns(ClientId, Group),
   ID = ?NS_TOPIC(NS, Topic),
   case wolff_producers_sup:ensure_present(ClientId, ID, ProducerCfg) of
+    {ok, _Pid} when Topic =:= ?DYNAMIC ->
+      {ok, #{client_id => ClientId,
+             group => Group,
+             topic => ?DYNAMIC,
+             partitioner => maps:get(partitioner, ProducerCfg, random)
+            }};
     {ok, Pid} ->
       case gen_server:call(Pid, get_status, infinity) of
         #{Topic := ?not_initialized(Reason)} ->
@@ -170,12 +183,11 @@ stop_supervised(ClientId, ?NS_TOPIC(NS, Topic) = ID) ->
        ok
   end.
 
-%% @doc Lookup producer pid.
+%% @hidden Lookup producer pid (for test only).
 lookup_producer(#{workers := Workers}, Partition) ->
   maps:get(Partition, Workers);
-lookup_producer(#{client_id := ClientId, group := Group, topic := Topic}, Partition) ->
-  {ok, Pid} = find_producer_by_partition(ClientId, Group, Topic, Partition),
-  Pid.
+lookup_producer(#{group := Group, topic := Topic} = Producers, Partition) when is_binary(Topic) ->
+  find_producer_by_partition2(Producers, Group, Topic, Partition).
 
 %% @doc Retrieve the per-partition producer pid.
 -spec pick_producer(producers(), [wolff:msg()]) -> {partition(), pid()}.
@@ -186,16 +198,15 @@ pick_producer(#{workers := Workers,
   Partition = pick_partition(Count, Partitioner, Batch),
   LookupFn = fun(P) -> maps:get(P, Workers) end,
   do_pick_producer(Partitioner, Partition, Count, LookupFn);
-pick_producer(#{partitioner := Partitioner,
-                client_id := ClientId,
-                group := Group,
-                topic := Topic
-               }, Batch) ->
+pick_producer(#{topic := Topic} = Producers, Batch) ->
+  pick_producer2(Producers, Topic, Batch).
+
+pick_producer2(#{partitioner := Partitioner,
+                 client_id := ClientId,
+                 group := Group
+                }, Topic, Batch) ->
   Count = get_partition_cnt(ClientId, Group, Topic),
-  LookupFn = fun(P) ->
-    {ok, Pid} = find_producer_by_partition(ClientId, Group, Topic, P),
-    Pid
-  end,
+  LookupFn = fun(P) -> find_producer_by_partition2(ClientId, Group, Topic, P) end,
   try
     Partition = pick_partition(Count, Partitioner, Batch),
     do_pick_producer(Partitioner, Partition, Count, LookupFn)
@@ -425,13 +436,21 @@ find_producer_by_partition(ClientId, Group, Topic, Partition) when is_integer(Pa
   NS = resolve_ns(ClientId, Group),
   case ets_lookup_val(?WOLFF_PRODUCERS_GLOBAL_TABLE, {NS, Topic, Partition}, false) of
     false ->
-      {error, #{reason => producer_not_found,
+      {error, #{cause => producer_not_found,
                 client => ClientId,
                 topic => Topic,
                 group => Group,
                 partition => Partition}};
     Pid ->
       {ok, Pid}
+  end.
+
+find_producer_by_partition2(ClientId, Group, Topic, Partition) ->
+  case find_producer_by_partition(ClientId, Group, Topic, Partition) of
+    {ok, Pid} ->
+      Pid;
+    {error, Reason} ->
+      throw(Reason)
   end.
 
 find_producers_by_client_topic(ClientId, Group, Topic) ->
