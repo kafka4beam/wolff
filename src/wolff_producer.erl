@@ -220,7 +220,7 @@ do_init(#{client_id := ClientId,
   PathSegment0 =
     case maps:find(group, Config0) of
       {ok, Group} when is_binary(Group) -> <<Group/binary, $_, Topic/binary>>;
-      _ -> Topic
+      _ -> <<ClientId/binary, $_, Topic/binary>>
     end,
   PathSegment = escape(PathSegment0),
   QCfg = case maps:get(replayq_dir, Config0, false) of

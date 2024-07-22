@@ -18,15 +18,17 @@
 %% This talbe helps to avoid calling supervisor:which_children intensively.
 -define(WOLFF_CLIENTS_GLOBAL_TABLE, wolff_clients_global).
 
-%% Table to register {ClientID, Group, Topic, Partition} -> Pid mapping.
+%% Table to register {NS, Topic, Partition} -> Pid mapping.
 %% This allows all producers to share this one ETS table for quick
 %% partition-worker lookup.
-%% A special record {{ClientId, Group, Topic, partition_count}, Count}
+%% A special record {{NS, Topic, partition_count}, Count}
 %% is inserted to cache the partition count.
+%% NS is either `{client, ClientId}` for regular producers
+%% or `Group` if topic is assigned to a group.
 -define(WOLFF_PRODUCERS_GLOBAL_TABLE, wolff_producers_global).
 
--define(GROUPED_TOPIC(GROUP, TOPIC), {GROUP, TOPIC}).
--define(NO_GROUP, <<"_nogroup_">>).
+-define(NS_TOPIC(NS, TOPIC), {NS, TOPIC}).
+-define(NO_GROUP, no_group).
 
 -define(all_partitions, all_partitions).
 

@@ -1,6 +1,8 @@
 * 3.0.0
-  - Deleted round_robin partition strategy.
-  - Change 'alias' to 'group'.
+  - Deleted `round_robin` partition strategy.
+  - Change `alias` to `group`.
+    Add `#{group => <<"group1">>}` to producer config for namespacing the topic,
+    so multiple producers for one topic will not clash each other when sharing the same client.
 
 * 2.0.0
   - Added the `alias` producer config option to make producers to the same topic be independent.
