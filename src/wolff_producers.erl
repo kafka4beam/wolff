@@ -53,7 +53,7 @@
 
 -type client_id() :: wolff:client_id().
 -type gname() :: ?NO_GROUP | wolff_client:producer_group().
--type id() :: ?NS_TOPIC(client_id() | gname(), topic()).
+-type id() :: ?NS_TOPIC({client, client_id()} | gname(), topic()).
 -type topic() :: kpro:topic().
 -type partition() :: kpro:partition().
 -type config_key() :: name | partitioner | partition_count_refresh_interval_seconds |
@@ -559,6 +559,8 @@ producer_id(#{producers_status := Status} = St, Format) ->
   [Topic] = maps:keys(Status),
   producer_id(NS, Topic, Format).
 
+producer_id({client, NS}, Topic, readable) ->
+    producer_id(NS, Topic, readable);
 producer_id(NS, Topic, readable) ->
   <<NS/binary, $:, Topic/binary>>;
 producer_id(NS, Topic, supervisor) ->
@@ -568,6 +570,6 @@ resolve_ns(#{client_id := ClientId, config := Config}) ->
     resolve_ns(ClientId, get_group(Config)).
 
 resolve_ns(ClientId, ?NO_GROUP) ->
-    ClientId;
+    {client, ClientId};
 resolve_ns(_ClientId, Group) ->
     Group.

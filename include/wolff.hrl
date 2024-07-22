@@ -23,8 +23,8 @@
 %% partition-worker lookup.
 %% A special record {{NS, Topic, partition_count}, Count}
 %% is inserted to cache the partition count.
-%% NS is either the client-ID for regular producers
-%% or the group name if topic is assigned to a group.
+%% NS is either `{client, ClientId}` for regular producers
+%% or `Group` if topic is assigned to a group.
 -define(WOLFF_PRODUCERS_GLOBAL_TABLE, wolff_producers_global).
 
 -define(NS_TOPIC(NS, TOPIC), {NS, TOPIC}).
