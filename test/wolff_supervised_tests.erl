@@ -82,7 +82,7 @@ different_producers_same_topic_test() ->
   {ok, _} = application:ensure_all_started(wolff),
   ClientId = <<"same-topic">>,
   ClientCfg = client_config(),
-  {ok, _ClientPid} = wolff:ensure_supervised_client(ClientId, ?HOSTS, ClientCfg),
+  {ok, ClientPid} = wolff:ensure_supervised_client(ClientId, ?HOSTS, ClientCfg),
   Topic = <<"test-topic">>,
   ProducerName0 = <<"p0">>,
   Group0 = <<"a0">>,
@@ -113,6 +113,9 @@ different_producers_same_topic_test() ->
                          filelib:is_dir(filename:join([BaseDir, File])),
                          lists:member(list_to_binary(File), [Dir0, Dir1])],
   ?assertMatch([_, _], ReplayQDirs, #{base_dir => Files}),
+  ?assertMatch(#{known_topics := #{Topic := #{Group0 := true, Group1 := true}},
+                 conns := #{{Topic, 0} := _}
+                }, sys:get_state(ClientPid)),
   %% We now stop one of the producers.  The other should keep working.
   ok = wolff:stop_and_delete_supervised_producers(Producers0),
   %% Some time for `wolff_client:delete_producers_metadata' to be processed.

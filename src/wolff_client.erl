@@ -213,27 +213,8 @@ handle_cast({recv_leader_connection, Group, Topic, Partition, Caller, MaxConnect
       {noreply, St0}
   end;
 handle_cast({delete_producers_metadata, Group, Topic}, St0) ->
-  #{metadata_ts := Topics0,
-    conns := Conns0,
-    known_topics := KnownTopics0} = St0,
-  case KnownTopics0 of
-      #{Topic := #{Group := true} = KnownProducers} when map_size(KnownProducers) =:= 1 ->
-          %% Last entry: we may drop the connection metadata
-          KnownTopics = maps:remove(Topic, KnownTopics0),
-          Conns = maps:without( [K || K = {K1, _} <- maps:keys(Conns0), K1 =:= Topic], Conns0),
-          Topics = maps:remove(Group, Topics0),
-          St = St0#{metadata_ts := Topics, conns := Conns, known_topics := KnownTopics},
-          {noreply, St};
-      #{Topic := #{Group := true} = KnownProducers0} ->
-          %% Connection is still being used by other producers.
-          KnownProducers = maps:remove(Group, KnownProducers0),
-          KnownTopics = KnownTopics0#{Topic := KnownProducers},
-          St = St0#{known_topics := KnownTopics},
-          {noreply, St};
-      _ ->
-          %% Already gone; nothing to do.
-          {noreply, St0}
-  end;
+  St = do_delete_producers_metadata(Group, Topic, St0),
+  {noreply, St};
 handle_cast(_Cast, St) ->
   {noreply, St}.
 
@@ -248,6 +229,31 @@ terminate(_, #{client_id := ClientID, conns := Conns} = St) ->
   {ok, St#{conns := #{}}}.
 
 %% == internals ======================================================
+
+do_delete_producers_metadata(Group, ?DYNAMIC, St) ->
+  #{known_topics := KnownTopics} = St,
+  Topics = maps:keys(KnownTopics),
+  lists:foldl(fun(T, StIn) -> do_delete_producers_metadata(Group, T, StIn) end, St, Topics);
+do_delete_producers_metadata(Group, Topic, St) ->
+  #{metadata_ts := Topics0,
+    conns := Conns0,
+    known_topics := KnownTopics0} = St,
+  case KnownTopics0 of
+      #{Topic := #{Group := true} = KnownProducers} when map_size(KnownProducers) =:= 1 ->
+          %% Last entry: we may drop the connection metadata
+          KnownTopics = maps:remove(Topic, KnownTopics0),
+          Conns = maps:without( [K || K = {K1, _} <- maps:keys(Conns0), K1 =:= Topic], Conns0),
+          Topics = maps:remove(Group, Topics0),
+          St#{metadata_ts := Topics, conns := Conns, known_topics := KnownTopics};
+      #{Topic := #{Group := true} = KnownProducers0} ->
+          %% Connection is still being used by other producers.
+          KnownProducers = maps:remove(Group, KnownProducers0),
+          KnownTopics = KnownTopics0#{Topic := KnownProducers},
+          St#{known_topics := KnownTopics};
+      _ ->
+          %% Already gone; nothing to do.
+          St
+  end.
 
 ensure_metadata_conn(#{seed_hosts := Hosts, conn_config := ConnConfig, metadata_conn := Pid} = St) ->
   case is_alive(Pid) of

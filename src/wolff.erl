@@ -36,6 +36,11 @@
          send_sync/3
         ]).
 
+%% Messaging APIs of dynamic producer.
+-export([send2/4,
+         send_sync2/4
+        ]).
+
 -export([check_connectivity/1,
          check_connectivity/2,
          check_if_topic_exists/2,
@@ -108,14 +113,19 @@ stop_and_delete_supervised_producers(Producers) ->
 %% so it may use them to correlate the future `AckFun' evaluation.
 %% NOTE: This API has no backpressure,
 %%       high produce rate may cause execussive ram and disk usage.
-%% NOTE: It's possible that two or more batches get included into one produce request.
-%%       But a batch is never split into produce requests.
-%%       Make sure it will not exceed the `max_batch_bytes' limit when sending a batch.
 %% NOTE: In case producers are configured with `required_acks = none',
 %%       the second arg for callback function will always be `?UNKNOWN_OFFSET' (`-1').
 -spec send(producers(), [msg()], ack_fun()) -> {partition(), pid()}.
 send(Producers, Batch, AckFun) ->
   {Partition, ProducerPid} = wolff_producers:pick_producer(Producers, Batch),
+  ok = wolff_producer:send(ProducerPid, Batch, AckFun),
+  {Partition, ProducerPid}.
+
+%% @doc Topic as argument for dynamic producers, otherwise equivalent to `send/3'.
+-spec send2(producers(), topic(), [msg()], ack_fun()) -> {partition(), pid()}.
+send2(Producers, Topic, Batch, AckFun) ->
+  ok = wolff_producers:ensure_topic(Producers, Topic),
+  {Partition, ProducerPid} = wolff_producers:pick_producer2(Producers, Topic, Batch),
   ok = wolff_producer:send(ProducerPid, Batch, AckFun),
   {Partition, ProducerPid}.
 
@@ -130,6 +140,13 @@ send(Producers, Batch, AckFun) ->
 -spec send_sync(producers(), [msg()], timeout()) -> {partition(), offset_reply()}.
 send_sync(Producers, Batch, Timeout) ->
   {_Partition, ProducerPid} = wolff_producers:pick_producer(Producers, Batch),
+  wolff_producer:send_sync(ProducerPid, Batch, Timeout).
+
+%% @doc Topic as argument for dynamic producers, otherwise equivalent to `send_sync/3'.
+-spec send_sync2(producers(), topic(), [msg()], timeout()) -> {partition(), offset_reply()}.
+send_sync2(Producers, Topic, Batch, Timeout) ->
+  ok = wolff_producers:ensure_topic(Producers, Topic),
+  {_Partition, ProducerPid} = wolff_producers:pick_producer2(Producers, Topic, Batch),
   wolff_producer:send_sync(ProducerPid, Batch, Timeout).
 
 %% @hidden For test only.

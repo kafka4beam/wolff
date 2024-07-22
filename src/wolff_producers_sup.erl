@@ -19,6 +19,7 @@
 -export([start_link/0, init/1]).
 
 -export([ensure_present/3, ensure_absence/1]).
+-export([get_producers_pid/1]).
 
 -define(SUPERVISOR, ?MODULE).
 
@@ -61,3 +62,16 @@ child_spec(ClientId, ProducerId, Config) ->
     restart => transient,
     type => worker
    }.
+
+%% Find the running process (gen_server of wolff_producers) from thie child ID.
+get_producers_pid(ID) ->
+  Children = supervisor:which_children(?SUPERVISOR),
+  case lists:keyfind(ID, 1, Children) of
+    {ID, Pid, _Type, _Modules} when is_pid(Pid) ->
+      Pid;
+    Other ->
+      throw(#{cause => producers_not_found_uder_supervisor,
+              child_id => ID,
+              lookup_result => Other
+             })
+  end.
