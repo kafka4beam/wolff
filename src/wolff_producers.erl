@@ -21,7 +21,7 @@
 -export([start_supervised/3, stop_supervised/1, stop_supervised/2]).
 -export([pick_producer/2, lookup_producer/2, cleanup_workers_table/1]).
 %% Dynamic topics
--export([pick_producer2/3, ensure_topic/2]).
+-export([pick_producer2/3]).
 
 %% gen_server callbacks
 -export([code_change/3, handle_call/3, handle_cast/2, handle_info/2, init/1, terminate/2]).
@@ -93,7 +93,7 @@
 -define(reinit_max_attempts, reinit_max_attempts).
 -define(reinit_max_attempts_default, 30).
 -define(retry_msg, "will retry 30 times").
--define(unknown_topic_expire_seconds, 30).
+-define(unknown_topic_cache_expire_seconds, 30).
 
 -type max_partitions() :: wolff_client:max_partitions().
 
@@ -213,25 +213,8 @@ stop_supervised(ClientId, ?NS_TOPIC(NS, Topic) = ID) ->
        ok
   end.
 
--spec ensure_topic(producers(), topic()) -> ok.
-ensure_topic(#{client_id := ClientId, group := Group, topic := ?DYNAMIC}, Topic) ->
-  case is_topic_unknown(ClientId, Group, Topic) of
-    true ->
-      throw_err(ClientId, Group, Topic, unknown_topic_or_partition, cached);
-    _FalseOrUnsure ->
-      case ensure_topic2(ClientId, Group, Topic) of
-        ok ->
-          ok;
-        {error, Reason} ->
-          throw_err(ClientId, Group, Topic, Reason, received)
-      end
-  end;
-ensure_topic(_, _) ->
-  %% this is a bug on the caller side.
-  error("cannot_add_topic_to_non_dynamic_producer").
-
--spec throw_err(_, _, _, _, _) -> no_return().
-throw_err(ClientId, Group, Topic, Reason, RespFrom) ->
+-spec throw_unknown(_, _, _, _, _) -> no_return().
+throw_unknown(ClientId, Group, Topic, Reason, RespFrom) ->
   throw(#{client_id => ClientId,
           group => Group,
           topic => Topic,
@@ -239,15 +222,10 @@ throw_err(ClientId, Group, Topic, Reason, RespFrom) ->
           response => RespFrom
          }).
 
-ensure_topic2(ClientId, Group, Topic) ->
-  case get_partition_cnt(ClientId, Group, Topic) of
-    ?partition_count_unavailable ->
-      ID = ?NS_TOPIC(Group, ?DYNAMIC),
-      Pid = wolff_producers_sup:get_producers_pid(ID),
-      gen_server:call(Pid, {ensure_topic, Topic}, infinity);
-    _ ->
-      ok
-  end.
+add_topic(Group, Topic) ->
+  ID = ?NS_TOPIC(Group, ?DYNAMIC),
+  Pid = wolff_producers_sup:get_producers_pid(ID),
+  gen_server:call(Pid, {add_topic, Topic}, infinity).
 
 %% @hidden Lookup producer pid (for test only).
 lookup_producer(#{workers := Workers}, Partition) ->
@@ -264,15 +242,44 @@ pick_producer(#{workers := Workers,
   Partition = pick_partition(Count, Partitioner, Batch),
   LookupFn = fun(P) -> maps:get(P, Workers) end,
   do_pick_producer(Partitioner, Partition, Count, LookupFn);
-pick_producer(#{topic := Topic} = Producers, Batch) ->
-  pick_producer2(Producers, Topic, Batch).
-
--spec pick_producer2(producers(), topic(), [wolff:msg()]) -> {partition(), pid()}.
-pick_producer2(#{partitioner := Partitioner,
-                 client_id := ClientId,
-                 group := Group
-                }, Topic, Batch) ->
+pick_producer(#{client_id := ClientId, group := Group, topic := Topic} = Producers, Batch) ->
   Count = get_partition_cnt(ClientId, Group, Topic),
+  pick_producer3(Producers, Topic, Batch, Count).
+
+%% @doc Retrieve the per-partition producer pid.
+%% If topic was not added before, this function will try to added it.
+-spec pick_producer2(producers(), topic(), [wolff:msg()]) -> {partition(), pid()}.
+pick_producer2(#{client_id := ClientId,
+                 group := Group,
+                 topic := T0
+                } = Producers, Topic, Batch) ->
+  T0 =/= ?DYNAMIC andalso error("cannot_add_topic_to_non_dynamic_producer"),
+  Count0 = get_partition_cnt(ClientId, Group, Topic),
+  Count = resove_partitions_cnt(ClientId, Group, Topic, Count0),
+  pick_producer3(Producers, Topic, Batch, Count).
+
+resove_partitions_cnt(_ClientId, _Group, _Topic, C) when is_integer(C) andalso C > 0 ->
+  C;
+resove_partitions_cnt(ClientId, Group, Topic, ?partition_count_unavailable) ->
+  resove_partitions_cnt(ClientId, Group, Topic, ?UNKNOWN(0));
+resove_partitions_cnt(ClientId, Group, Topic, ?UNKNOWN(Since)) ->
+  case (now_ts() - Since) > timer:seconds(?unknown_topic_cache_expire_seconds) of
+    true ->
+      case add_topic(Group, Topic) of
+        ok ->
+          get_partition_cnt(ClientId, Group, Topic);
+        {error, unknown_topic_or_partition} ->
+          throw_unknown(ClientId, Group, Topic, unknown_topic_or_partition, received);
+        {error, Reason} ->
+          throw(#{client_id => ClientId, group => Group, topics => Topic, error => Reason})
+      end;
+    false ->
+      throw_unknown(ClientId, Group, Topic, unknown_topic_or_partition, cached)
+  end.
+
+pick_producer3(#{client_id := ClientId,
+                 group := Group,
+                 partitioner := Partitioner}, Topic, Batch, Count) ->
   LookupFn = fun(P) -> find_producer_by_partition2(ClientId, Group, Topic, P) end,
   try
     Partition = pick_partition(Count, Partitioner, Batch),
@@ -415,13 +422,13 @@ handle_info(Info, St) ->
 
 handle_call(get_status, _From, #{producers_status := Status} = St) ->
   {reply, Status, St};
-handle_call({ensure_topic, Topic}, _From, #{producers_status := Status} = St) ->
+handle_call({add_topic, Topic}, _From, #{producers_status := Status} = St) ->
   case Status of
     #{Topic := _} ->
       %% race condition with other callers
       {reply, ok, St};
     _ ->
-      {NewSt, Reply} = do_ensure_topic(St, Topic),
+      {NewSt, Reply} = do_add_topic(St, Topic),
       {reply, Reply, NewSt}
   end;
 handle_call(Call, From, St) ->
@@ -438,8 +445,8 @@ code_change(_OldVsn, St, _Extra) ->
 terminate(_, #{my_id := ID}) ->
   ok = cleanup_workers_table(ID).
 
-do_ensure_topic(#{my_id := ?NS_TOPIC(Group, ?DYNAMIC),
-                  producers_status := Status} = St, Topic) ->
+do_add_topic(#{my_id := ?NS_TOPIC(Group, ?DYNAMIC),
+               producers_status := Status} = St, Topic) ->
   {TopicStatus, Reply} =
     case init_one_topic_producers(St, Topic, _Attempts = 0) of
       ok ->
@@ -488,7 +495,7 @@ init_producers(#{producers_status := Status, ?reinit_tref := Tref0} = St) ->
      }.
 
 %% loop over the topics and try to initialize producers for them
-%% returns a tuple of {OK, ERR, UNKNOWN} where:
+%% returns a tuple of {OK, ERR} where:
 %%  - OK for succeeded init results
 %%  - ERR for failed
 %% A topic is discarded if:
@@ -614,7 +621,6 @@ insert_producers(ClientId, Group, Topic, Workers0) ->
   NS = resolve_ns(ClientId, Group),
   Workers = lists:map(fun({Partition, Pid}) -> {{NS, Topic, Partition}, Pid} end, maps:to_list(Workers0)),
   true = ets:insert(?WOLFF_PRODUCERS_GLOBAL_TABLE, Workers),
-  true = ets:delete(?WOLFF_PRODUCERS_GLOBAL_TABLE, {NS, Topic, ?UNKNOWN}),
   ok.
 
 start_producer_and_insert_pid(ClientId, Group, Topic, Partition, Config) ->
@@ -707,18 +713,14 @@ put_partition_cnt(ClientId, Group, Topic, Count) ->
   true = ets:insert(?WOLFF_PRODUCERS_GLOBAL_TABLE, {{NS, Topic, partition_count}, Count}),
   ok.
 
+%% Insert a special cache value for the 'unknown' status of a topic.
+%% This is to avoid overwhelming wolff_producers_sup process by calling which_children
+%% concurrently from many callers.
 mark_topic_unknown(Group, Topic) ->
-  true = ets:insert(?WOLFF_PRODUCERS_GLOBAL_TABLE, {{Group, Topic, ?UNKNOWN}, now_ts()}),
+  true = ets:insert(?WOLFF_PRODUCERS_GLOBAL_TABLE,
+                    {{Group, Topic, partition_count},
+                    ?UNKNOWN(now_ts())}),
   ok.
-
-is_topic_unknown(ClientId, Group, Topic) ->
-  NS = resolve_ns(ClientId, Group),
-  case ets_lookup_val(?WOLFF_PRODUCERS_GLOBAL_TABLE, {NS, Topic, ?UNKNOWN}, not_marked) of
-    not_marked ->
-      unsure;
-    Past ->
-      now_ts() - Past < timer:seconds(?unknown_topic_expire_seconds)
-  end.
 
 ensure_timer_cancelled(Tref, Msg) when is_reference(Tref) ->
   _ = erlang:cancel_timer(Tref),

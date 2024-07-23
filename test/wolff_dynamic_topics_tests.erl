@@ -76,21 +76,21 @@ unknown_topic_expire_test() ->
                  topic := Topic,
                  response := received
                 }, wolff:send2(Producers, Topic, [Msg], AckFun)),
-  [{{Group, Topic, ?UNKNOWN}, Ts1}] = ets:tab2list(?WOLFF_PRODUCERS_GLOBAL_TABLE),
+  [{{Group, Topic, partition_count}, ?UNKNOWN(Ts1)}] = ets:tab2list(?WOLFF_PRODUCERS_GLOBAL_TABLE),
   %% try to send again, should not result in a new ts
   ?assertThrow(#{cause := unknown_topic_or_partition,
                  group := Group,
                  topic := Topic,
                  response := cached
                 }, wolff:send2(Producers, Topic, [Msg], AckFun)),
-  ?assertEqual([{{Group, Topic, ?UNKNOWN}, Ts1}], ets:tab2list(?WOLFF_PRODUCERS_GLOBAL_TABLE)),
+  ?assertEqual([{{Group, Topic, partition_count}, ?UNKNOWN(Ts1)}], ets:tab2list(?WOLFF_PRODUCERS_GLOBAL_TABLE)),
   %% force the unknown mark to expire
-  ets:insert(?WOLFF_PRODUCERS_GLOBAL_TABLE, {{Group, Topic, ?UNKNOWN}, Ts1 - timer:seconds(31)}),
+  ets:insert(?WOLFF_PRODUCERS_GLOBAL_TABLE, {{Group, Topic, partition_count}, ?UNKNOWN(0)}),
   %% create the topic in Kafka
   ok = create_topic(Topic),
   ?assertMatch({0, Offset} when is_integer(Offset),
                wolff:send_sync2(Producers, Topic, [Msg], 10_000)),
-  ?assertEqual([], ets:lookup(?WOLFF_PRODUCERS_GLOBAL_TABLE, {Group, Topic, ?UNKNOWN})),
+  ?assertMatch([C] when C > 0, ets:lookup(?WOLFF_PRODUCERS_GLOBAL_TABLE, {Group, Topic, partition_count})),
   %% cleanup
   ok = wolff:stop_and_delete_supervised_producers(Producers),
   ?assertEqual([], ets:tab2list(?WOLFF_PRODUCERS_GLOBAL_TABLE)),
@@ -99,7 +99,7 @@ unknown_topic_expire_test() ->
   ok = delete_topic(Topic).
 
 bad_producers_test() ->
-  Producers = #{group => ?NO_GROUP, client_id => <<"foobar">>, topics => <<"test-topic">>},
+  Producers = #{group => ?NO_GROUP, client_id => <<"foobar">>, topic => <<"test-topic">>},
   Msg = #{value => <<"v">>},
   ?assertError("cannot_add_topic_to_non_dynamic_producer", wolff:send_sync2(Producers, <<"test-topic">>, [Msg], 1000)),
   ok.

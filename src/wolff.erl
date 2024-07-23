@@ -124,7 +124,6 @@ send(Producers, Batch, AckFun) ->
 %% @doc Topic as argument for dynamic producers, otherwise equivalent to `send/3'.
 -spec send2(producers(), topic(), [msg()], ack_fun()) -> {partition(), pid()}.
 send2(Producers, Topic, Batch, AckFun) ->
-  ok = wolff_producers:ensure_topic(Producers, Topic),
   {Partition, ProducerPid} = wolff_producers:pick_producer2(Producers, Topic, Batch),
   ok = wolff_producer:send(ProducerPid, Batch, AckFun),
   {Partition, ProducerPid}.
@@ -145,7 +144,6 @@ send_sync(Producers, Batch, Timeout) ->
 %% @doc Topic as argument for dynamic producers, otherwise equivalent to `send_sync/3'.
 -spec send_sync2(producers(), topic(), [msg()], timeout()) -> {partition(), offset_reply()}.
 send_sync2(Producers, Topic, Batch, Timeout) ->
-  ok = wolff_producers:ensure_topic(Producers, Topic),
   {_Partition, ProducerPid} = wolff_producers:pick_producer2(Producers, Topic, Batch),
   wolff_producer:send_sync(ProducerPid, Batch, Timeout).
 

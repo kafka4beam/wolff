@@ -25,14 +25,14 @@
 %%   is inserted to cache the partition count.
 %%   NS is either `{client, ClientId}` for regular producers
 %%   or `Group` if topic is assigned to a group.
-%% - A special record {{NS, Topic}, 'unknown?'} -> timestamp() is
-%%   inserted to cache the non-exist status of a topic.
+%% - When Count is {?UNKNOWN, Timestamp}, it means the topic
+%%   is not found in Kafka or the client is not authorized to access it
 -define(WOLFF_PRODUCERS_GLOBAL_TABLE, wolff_producers_global).
 
 -define(NS_TOPIC(NS, TOPIC), {NS, TOPIC}).
 -define(NO_GROUP, no_group).
 -define(DYNAMIC, dynamic).
--define(UNKNOWN, 'unknown?').
+-define(UNKNOWN(TS), {unknown, TS}).
 
 -define(all_partitions, all_partitions).
 
