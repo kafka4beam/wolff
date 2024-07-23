@@ -532,8 +532,7 @@ producer_config(Name) ->
    }.
 
 key(Name) ->
-  iolist_to_binary(io_lib:format("~p/~p/~p", [Name, calendar:local_time(),
-                                              erlang:system_time()])).
+  iolist_to_binary(io_lib:format("~0p/~0p/~0p", [Name, calendar:local_time(), erlang:system_time()])).
 
 count_partitions(Topic) ->
     Cmd = kafka_topic_cmd_base(Topic) ++ " --describe | grep Configs | awk '{print $4}'",

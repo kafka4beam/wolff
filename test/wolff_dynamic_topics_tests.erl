@@ -48,12 +48,11 @@ dynamic_topics_test() ->
   ok.
 
 unknown_topic_expire_test() ->
-    ok.
+  ok.
 
 %% helpers
 
 client_config() -> #{}.
 
 key(Name) ->
-  iolist_to_binary(io_lib:format("~p/~p/~p", [Name, calendar:local_time(),
-                                              erlang:system_time()])).
+  iolist_to_binary(io_lib:format("~0p/~0p/~0p", [Name, calendar:local_time(), erlang:system_time()])).
