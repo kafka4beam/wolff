@@ -338,33 +338,26 @@ handle_cast(_Cast, St) ->
 code_change(_OldVsn, St, _Extra) ->
   {ok, St}.
 
-terminate(_Reason, State = #{replayq := Q}) ->
+terminate(_Reason, #{replayq := Q} = State) ->
   ok = replayq:close(Q),
-  clear_gauges(State, Q),
-  ok;
-terminate(_Reason, _State = #{config := Config}) ->
-  wolff_metrics:inflight_set(Config, 0),
-  wolff_metrics:queuing_set(Config, 0),
-  ok;
+  ok = clear_gauges(State, Q);
 terminate(_Reason, _State) ->
   ok.
 
 clear_gauges(#{config := Config}, Q) ->
-    wolff_metrics:inflight_set(Config, 0),
-    maybe_reset_queuing(Config, Q),
-    ok;
-clear_gauges(_State, _MaybeQ) ->
-    ok.
+  wolff_metrics:inflight_set(Config, 0),
+  maybe_reset_queuing(Config, Q),
+  ok.
 
 maybe_reset_queuing(Config, Q) ->
-    case {replayq:count(Q), is_replayq_durable(Config, Q)} of
-        {0, _} ->
-            wolff_metrics:queuing_set(Config, 0);
-        {_, false} ->
-            wolff_metrics:queuing_set(Config, 0);
-        {_, _} ->
-            ok
-    end.
+  case {replayq:count(Q), is_replayq_durable(Config, Q)} of
+    {0, _} ->
+      wolff_metrics:queuing_set(Config, 0);
+    {_, false} ->
+      wolff_metrics:queuing_set(Config, 0);
+    {_, _} ->
+      ok
+  end.
 
 ensure_ts(Batch) ->
   lists:map(fun(#{ts := _} = Msg) -> Msg;
