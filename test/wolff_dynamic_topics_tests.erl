@@ -39,6 +39,8 @@ dynamic_topics_test() ->
                 }, sys:get_state(ClientPid)),
   %% We now stop one of the producers.  The other should keep working.
   ok = wolff:stop_and_delete_supervised_producers(Producers),
+  %% idempotent
+  ok = wolff:stop_and_delete_supervised_producers(Producers),
   ?assertMatch(#{known_topics := Topics,
                  conns := Conns
                 } when map_size(Topics) =:= 0 andalso map_size(Conns) =:= 0,
@@ -95,6 +97,12 @@ unknown_topic_expire_test() ->
   ok = wolff:stop_and_delete_supervised_client(ClientId),
   ok = application:stop(wolff),
   ok = delete_topic(Topic).
+
+bad_producers_test() ->
+  Producers = #{group => ?NO_GROUP, client_id => <<"foobar">>, topics => <<"test-topic">>},
+  Msg = #{value => <<"v">>},
+  ?assertError("cannot_add_topic_to_non_dynamic_producer", wolff:send_sync2(Producers, <<"test-topic">>, [Msg], 1000)),
+  ok.
 
 %% helpers
 
