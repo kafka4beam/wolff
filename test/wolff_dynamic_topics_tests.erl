@@ -19,8 +19,8 @@ dynamic_topics_test() ->
                   group => Group,
                   partitioner => 0
                  },
-  {ok, Producers} = wolff:ensure_supervised_producers(ClientId, [], ProducerCfg),
-  ?assertEqual({ok, Producers}, wolff:ensure_supervised_producers(ClientId, [], ProducerCfg)),
+  {ok, Producers} = start(ClientId, ProducerCfg),
+  ?assertEqual({ok, Producers}, start(ClientId, ProducerCfg)),
   Children = supervisor:which_children(wolff_producers_sup),
   ?assertMatch([_], Children),
   %% We can send from each producer.
@@ -61,8 +61,7 @@ unknown_topic_expire_test() ->
                   group => Group,
                   partitioner => 0
                  },
-  {ok, Producers} = wolff:ensure_supervised_producers(ClientId, [], ProducerCfg),
-  ?assertEqual({ok, Producers}, wolff:ensure_supervised_producers(ClientId, [], ProducerCfg)),
+  {ok, Producers} = start(ClientId, ProducerCfg),
   Children = supervisor:which_children(wolff_producers_sup),
   ?assertMatch([_], Children),
   %% We can send from each producer.
@@ -131,3 +130,6 @@ kafka_topic_cmd_base(Topic) ->
   "docker exec wolff-kafka-1 /opt/kafka/bin/kafka-topics.sh" ++
   " --zookeeper zookeeper:2181" ++
   " --topic '" ++ Topic ++ "'".
+
+start(ClientId, ProducerCfg) ->
+  wolff:ensure_supervised_dynamic_producers(ClientId, ProducerCfg).

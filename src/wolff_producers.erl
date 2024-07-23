@@ -21,7 +21,7 @@
 -export([start_supervised/3, stop_supervised/1, stop_supervised/2]).
 -export([pick_producer/2, lookup_producer/2, cleanup_workers_table/1]).
 %% Dynamic topics
--export([pick_producer2/3]).
+-export([start_supervised_dynamic/2, pick_producer2/3]).
 
 %% gen_server callbacks
 -export([code_change/3, handle_call/3, handle_cast/2, handle_info/2, init/1, terminate/2]).
@@ -63,7 +63,7 @@
 
 -type client_id() :: wolff:client_id().
 -type gname() :: ?NO_GROUP | wolff_client:producer_group().
--type id() :: ?NS_TOPIC({client, client_id()} | gname(), topic()).
+-type id() :: ?NS_TOPIC({client, client_id()} | gname(), topic() | ?DYNAMIC).
 -type topic() :: kpro:topic().
 -type partition() :: kpro:partition().
 -type config_key() :: name |
@@ -147,24 +147,12 @@ get_group(ProducerCfg) ->
   maps:get(group, ProducerCfg, ?NO_GROUP).
 
 %% @doc Start supervised producers.
--spec start_supervised(wolff:client_id(), topic() | [topic()], config()) -> {ok, producers()} | {error, any()}.
-start_supervised(ClientId, Topic, ProducerCfg) when is_binary(Topic) ->
-  start_supervised(ClientId, [Topic], ProducerCfg);
-start_supervised(ClientId, Topics, ProducerCfg) ->
+-spec start_supervised(wolff:client_id(), topic(), config()) -> {ok, producers()} | {error, any()}.
+start_supervised(ClientId, Topic, ProducerCfg) ->
   Group = get_group(ProducerCfg),
-  Topic = case Topics of
-            [T] -> T;
-            [] -> ?DYNAMIC
-          end,
   NS = resolve_ns(ClientId, Group),
   ID = ?NS_TOPIC(NS, Topic),
   case wolff_producers_sup:ensure_present(ClientId, ID, ProducerCfg) of
-    {ok, _Pid} when Topic =:= ?DYNAMIC ->
-      {ok, #{client_id => ClientId,
-             group => Group,
-             topic => ?DYNAMIC,
-             partitioner => maps:get(partitioner, ProducerCfg, random)
-            }};
     {ok, Pid} ->
       case gen_server:call(Pid, get_status, infinity) of
         #{Topic := ?initialized} ->
@@ -184,6 +172,22 @@ start_supervised(ClientId, Topics, ProducerCfg) ->
               {error, unknown_topic_or_partition}
           end
       end;
+    {error, Reason} ->
+      {error, Reason}
+  end.
+
+%% @doc Start supervised dynamic producers.
+-spec start_supervised_dynamic(client_id(), config()) -> {ok, producers()} | {error, any()}.
+start_supervised_dynamic(ClientId, Config) ->
+  Group = get_group(Config),
+  ID = ?NS_TOPIC(Group, ?DYNAMIC),
+  case wolff_producers_sup:ensure_present(ClientId, ID, Config) of
+    {ok, _Pid} ->
+      {ok, #{client_id => ClientId,
+             group => Group,
+             topic => ?DYNAMIC,
+             partitioner => maps:get(partitioner, Config, random)
+            }};
     {error, Reason} ->
       {error, Reason}
   end.
