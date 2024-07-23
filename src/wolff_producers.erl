@@ -167,17 +167,22 @@ start_supervised(ClientId, Topics, ProducerCfg) ->
             }};
     {ok, Pid} ->
       case gen_server:call(Pid, get_status, infinity) of
-        #{Topic := ?not_initialized(_Attempts, Reason)} ->
-          %% This means wolff_client failed to fetch metadata
-          %% for this topic.
-          _ = wolff_producers_sup:ensure_absence(ID),
-          {error, Reason};
         #{Topic := ?initialized} ->
           {ok, #{client_id => ClientId,
                  group => Group,
                  topic => Topic,
                  partitioner => maps:get(partitioner, ProducerCfg, random)
-                }}
+                }};
+        Status ->
+          %% This means wolff_client failed to fetch metadata
+          %% for this topic.
+          _ = wolff_producers_sup:ensure_absence(ID),
+          case maps:find(Topic, Status) of
+            {ok, ?not_initialized(_Attempts, Reason)} ->
+              {error, Reason};
+            error ->
+              {error, unknown_topic_or_partition}
+          end
       end;
     {error, Reason} ->
       {error, Reason}
