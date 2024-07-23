@@ -370,6 +370,12 @@ ensure_leader_connections2(#{conn_config := ConnConfig,
   case get_metadata(SeedHosts, ConnConfig, Topic, []) of
     {ok, {ConnPid, {Brokers, PartitionMetaList}}} ->
       ensure_leader_connections3(St, Group, Topic, ConnPid, Brokers, PartitionMetaList, MaxPartitions);
+    {error, unknown_topic_or_partition} ->
+      log_warn(failed_to_fetch_metadata,
+               #{topic => Topic,
+                 description => "The topic does not exist, or client is not authorized to access"
+                }),
+      {error, unknown_topic_or_partition};
     {error, Errors} ->
       log_warn(failed_to_fetch_metadata, #{topic => Topic, errors => Errors}),
       {error, failed_to_fetch_metadata}

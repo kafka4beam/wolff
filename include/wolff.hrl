@@ -21,15 +21,18 @@
 %% Table to register {NS, Topic, Partition} -> Pid mapping.
 %% This allows all producers to share this one ETS table for quick
 %% partition-worker lookup.
-%% A special record {{NS, Topic, partition_count}, Count}
-%% is inserted to cache the partition count.
-%% NS is either `{client, ClientId}` for regular producers
-%% or `Group` if topic is assigned to a group.
+%% - A special record {{NS, Topic, partition_count}, Count}
+%%   is inserted to cache the partition count.
+%%   NS is either `{client, ClientId}` for regular producers
+%%   or `Group` if topic is assigned to a group.
+%% - A special record {{NS, Topic}, 'unknown?'} -> timestamp() is
+%%   inserted to cache the non-exist status of a topic.
 -define(WOLFF_PRODUCERS_GLOBAL_TABLE, wolff_producers_global).
 
 -define(NS_TOPIC(NS, TOPIC), {NS, TOPIC}).
 -define(NO_GROUP, no_group).
 -define(DYNAMIC, dynamic).
+-define(UNKNOWN, 'unknown?').
 
 -define(all_partitions, all_partitions).
 

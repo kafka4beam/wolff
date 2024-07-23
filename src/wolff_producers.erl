@@ -90,9 +90,10 @@
 -define(refresh_partition_count, refresh_partition_count).
 -define(partition_count_unavailable, -1).
 -define(no_timer, no_timer).
--define(reinit_max_attempts, 30).
+-define(reinit_max_attempts, reinit_max_attempts).
 -define(reinit_max_attempts_default, 30).
 -define(retry_msg, "will retry 30 times").
+-define(unknown_topic_expire_seconds, 30).
 
 -type max_partitions() :: wolff_client:max_partitions().
 
@@ -209,22 +210,39 @@ stop_supervised(ClientId, ?NS_TOPIC(NS, Topic) = ID) ->
 
 -spec ensure_topic(producers(), topic()) -> ok.
 ensure_topic(#{client_id := ClientId, group := Group, topic := ?DYNAMIC}, Topic) ->
-  case get_partition_cnt(ClientId, Group, Topic) of
-    ?partition_count_unavailable ->
-      ID = ?NS_TOPIC(Group, ?DYNAMIC),
-      Pid = wolff_producers_sup:get_producers_pid(ID),
-      case gen_server:call(Pid, {ensure_topic, Topic}, infinity) of
+  case is_topic_unknown(ClientId, Group, Topic) of
+    true ->
+      throw_err(ClientId, Group, Topic, unknown_topic_or_partition, cached);
+    _FalseOrUnsure ->
+      case ensure_topic2(ClientId, Group, Topic) of
         ok ->
           ok;
         {error, Reason} ->
-          throw(Reason)
-      end;
-    _ ->
-      ok
+          throw_err(ClientId, Group, Topic, Reason, received)
+      end
   end;
 ensure_topic(_, _) ->
   %% this is a bug on the caller side.
   error("cannot_add_topic_to_non_dynamic_producer").
+
+-spec throw_err(_, _, _, _, _) -> no_return().
+throw_err(ClientId, Group, Topic, Reason, RespFrom) ->
+  throw(#{client_id => ClientId,
+          group => Group,
+          topic => Topic,
+          cause => Reason,
+          response => RespFrom
+         }).
+
+ensure_topic2(ClientId, Group, Topic) ->
+  case get_partition_cnt(ClientId, Group, Topic) of
+    ?partition_count_unavailable ->
+      ID = ?NS_TOPIC(Group, ?DYNAMIC),
+      Pid = wolff_producers_sup:get_producers_pid(ID),
+      gen_server:call(Pid, {ensure_topic, Topic}, infinity);
+    _ ->
+      ok
+  end.
 
 %% @hidden Lookup producer pid (for test only).
 lookup_producer(#{workers := Workers}, Partition) ->
@@ -415,15 +433,19 @@ code_change(_OldVsn, St, _Extra) ->
 terminate(_, #{my_id := ID}) ->
   ok = cleanup_workers_table(ID).
 
-do_ensure_topic(#{producers_status := Status} = St0, Topic) ->
-  St1 = St0#{producers_status := Status#{Topic => ?not_initialized(0, pending)}},
-  #{producers_status := NewStatus} = St = init_producers(St1),
-  case maps:get(Topic, NewStatus) of
-    ?initialized ->
-      {St, ok};
-    ?not_initialized(_, Reason) ->
-      {St, {error, Reason}}
-  end.
+do_ensure_topic(#{my_id := ?NS_TOPIC(Group, ?DYNAMIC),
+                  producers_status := Status} = St, Topic) ->
+  {TopicStatus, Reply} =
+    case init_one_topic_producers(St, Topic, _Attempts = 0) of
+      ok ->
+        {#{Topic => ?initialized}, ok};
+      discard ->
+        ok = mark_topic_unknown(Group, Topic),
+        {#{}, {error, unknown_topic_or_partition}};
+      {error, ?not_initialized(_, Reason) = TopicStatus1} ->
+        {TopicStatus1, {error, Reason}}
+    end,
+  {St#{producers_status => maps:merge(Status, TopicStatus)}, Reply}.
 
 ensure_rediscover_client_timer(#{?rediscover_client_tref := ?no_timer} = St) ->
   Tref = erlang:send_after(?rediscover_client_delay, self(), ?rediscover_client),
@@ -448,7 +470,7 @@ start_link_producers(ClientId, Topic, Connections, Config) ->
 
 init_producers(#{producers_status := Status, ?reinit_tref := Tref0} = St) ->
   ok = ensure_timer_cancelled(Tref0, ?init_producers),
-  {OK, ERR} = init_producers_loop(St, maps:to_list(Status), #{}, #{}),
+  {OK, ERR} = init_producers_loop(St, maps:to_list(Status)),
   NewStatus = maps:merge(OK, ERR),
   Tref = case map_size(ERR) of
     0 ->
@@ -460,16 +482,40 @@ init_producers(#{producers_status := Status, ?reinit_tref := Tref0} = St) ->
       ?reinit_tref => Tref
      }.
 
+%% loop over the topics and try to initialize producers for them
+%% returns a tuple of {OK, ERR, UNKNOWN} where:
+%%  - OK for succeeded init results
+%%  - ERR for failed
+%% A topic is discarded if:
+%%  - It is a unknown (non-existing, or not authorized to access)
+%%  - Reached maximum re-init attempts
+init_producers_loop(St, Status) ->
+  init_producers_loop(St, Status, #{}, #{}).
+
 init_producers_loop(_St, [], OK, ERR) ->
   {OK, ERR};
 init_producers_loop(St, [{Topic, ?not_initialized(Attempts, _)} | More], OK, ERR) ->
+  case init_one_topic_producers(St, Topic, Attempts) of
+    ok ->
+      init_producers_loop(St, More, OK#{Topic => ?initialized}, ERR);
+    {error, Status} ->
+      init_producers_loop(St, More, OK, ERR#{Topic => Status});
+    discard ->
+      init_producers_loop(St, More, OK, ERR)
+  end;
+init_producers_loop(St, [{Topic, ?initialized} | More], OK, ERR) ->
+  init_producers_loop(St, More, OK#{Topic => ?initialized}, ERR).
+
+init_one_topic_producers(St, Topic, Attempts) ->
   #{client_id := ClientId, config := Config} = St,
   case start_linked_producers(ClientId, Topic, Config) of
     {ok, #{workers := Workers}} ->
       ok = insert_producers(ClientId, get_group(Config), Topic, Workers),
       log_info("kafka_producers_started_ok",
                #{topic => Topic, producer_id => producer_id(St), partitions => maps:size(Workers)}),
-      init_producers_loop(St, More, OK#{Topic => ?initialized}, ERR);
+      ok;
+    {error, unknown_topic_or_partition} ->
+      discard;
     {error, Reason} ->
       Max = maps:get(?reinit_max_attempts, Config, ?reinit_max_attempts_default),
       case Attempts + 1 of
@@ -480,9 +526,9 @@ init_producers_loop(St, [{Topic, ?not_initialized(Attempts, _)} | More], OK, ERR
                       reason => Reason,
                       note => ?retry_msg
                     }),
-          init_producers_loop(St, More, OK, ERR#{Topic => ?not_initialized(1, Reason)});
+          {error, ?not_initialized(1, Reason)};
         N when N < Max ->
-          init_producers_loop(St, More, OK, ERR#{Topic => ?not_initialized(N, Reason)});
+          {error, ?not_initialized(N, Reason)};
         N ->
           log_error("failed_to_init_producers",
                     #{producer_id => producer_id(St),
@@ -491,11 +537,9 @@ init_producers_loop(St, [{Topic, ?not_initialized(Attempts, _)} | More], OK, ERR
                       attempts => N,
                       note => "reached max attempts"
                     }),
-          init_producers_loop(St, More, OK, ERR)
+          discard
       end
-  end;
-init_producers_loop(St, [{Topic, ?initialized} | More], OK, ERR) ->
-  init_producers_loop(St, More, OK#{Topic => ?initialized}, ERR).
+  end.
 
 maybe_restart_producers(#{producers_status := Status} = St) ->
   ok = maybe_restart_producers(St, maps:to_list(Status)).
@@ -565,6 +609,7 @@ insert_producers(ClientId, Group, Topic, Workers0) ->
   NS = resolve_ns(ClientId, Group),
   Workers = lists:map(fun({Partition, Pid}) -> {{NS, Topic, Partition}, Pid} end, maps:to_list(Workers0)),
   true = ets:insert(?WOLFF_PRODUCERS_GLOBAL_TABLE, Workers),
+  true = ets:delete(?WOLFF_PRODUCERS_GLOBAL_TABLE, {NS, Topic, ?UNKNOWN}),
   ok.
 
 start_producer_and_insert_pid(ClientId, Group, Topic, Partition, Config) ->
@@ -654,8 +699,21 @@ get_partition_cnt(ClientId, Group, Topic) ->
 
 put_partition_cnt(ClientId, Group, Topic, Count) ->
   NS = resolve_ns(ClientId, Group),
-  _ = ets:insert(?WOLFF_PRODUCERS_GLOBAL_TABLE, {{NS, Topic, partition_count}, Count}),
+  true = ets:insert(?WOLFF_PRODUCERS_GLOBAL_TABLE, {{NS, Topic, partition_count}, Count}),
   ok.
+
+mark_topic_unknown(Group, Topic) ->
+  true = ets:insert(?WOLFF_PRODUCERS_GLOBAL_TABLE, {{Group, Topic, ?UNKNOWN}, now_ts()}),
+  ok.
+
+is_topic_unknown(ClientId, Group, Topic) ->
+  NS = resolve_ns(ClientId, Group),
+  case ets_lookup_val(?WOLFF_PRODUCERS_GLOBAL_TABLE, {NS, Topic, ?UNKNOWN}, not_marked) of
+    not_marked ->
+      unsure;
+    Past ->
+      now_ts() - Past < timer:seconds(?unknown_topic_expire_seconds)
+  end.
 
 ensure_timer_cancelled(Tref, Msg) when is_reference(Tref) ->
   _ = erlang:cancel_timer(Tref),
@@ -686,3 +744,6 @@ resolve_ns(ClientId, ?NO_GROUP) ->
   {client, ClientId};
 resolve_ns(_ClientId, Group) when is_binary(Group) ->
   Group.
+
+now_ts() ->
+  erlang:system_time(millisecond).

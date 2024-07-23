@@ -535,22 +535,22 @@ key(Name) ->
   iolist_to_binary(io_lib:format("~0p/~0p/~0p", [Name, calendar:local_time(), erlang:system_time()])).
 
 count_partitions(Topic) ->
-    Cmd = kafka_topic_cmd_base(Topic) ++ " --describe | grep Configs | awk '{print $4}'",
-    list_to_integer(string:strip(os:cmd(Cmd), right, $\n)).
+  Cmd = kafka_topic_cmd_base(Topic) ++ " --describe | grep Configs | awk '{print $4}'",
+  list_to_integer(string:strip(os:cmd(Cmd), right, $\n)).
 
 ensure_partitions(Topic, Partitions) ->
-    Cmd = kafka_topic_cmd_base(Topic) ++ " --alter --partitions " ++ integer_to_list(Partitions),
-    Result = os:cmd(Cmd),
-    Pattern = "Adding partitions succeeded!",
-    ?assert(string:str(Result, Pattern) > 0),
-    ok.
+  Cmd = kafka_topic_cmd_base(Topic) ++ " --alter --partitions " ++ integer_to_list(Partitions),
+  Result = os:cmd(Cmd),
+  Pattern = "Adding partitions succeeded!",
+  ?assert(string:str(Result, Pattern) > 0),
+  ok.
 
 kafka_topic_cmd_base(Topic) when is_binary(Topic) ->
-    kafka_topic_cmd_base(binary_to_list(Topic));
+  kafka_topic_cmd_base(binary_to_list(Topic));
 kafka_topic_cmd_base(Topic) ->
-    "docker exec wolff-kafka-1 /opt/kafka/bin/kafka-topics.sh" ++
-    " --zookeeper zookeeper:2181" ++
-    " --topic '" ++ Topic ++ "'".
+  "docker exec wolff-kafka-1 /opt/kafka/bin/kafka-topics.sh" ++
+  " --zookeeper zookeeper:2181" ++
+  " --topic '" ++ Topic ++ "'".
 
 get_telemetry_seq(Table, Event) ->
     wolff_tests:get_telemetry_seq(Table, Event).
