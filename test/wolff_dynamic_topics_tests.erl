@@ -7,7 +7,6 @@
 -define(KEY, key(?FUNCTION_NAME)).
 -define(HOSTS, [{"localhost", 9092}]).
 
-%% Checks that having different producers to the same kafka topic works.
 dynamic_topics_test() ->
   _ = application:stop(wolff), %% ensure stopped
   {ok, _} = application:ensure_all_started(wolff),
@@ -73,7 +72,7 @@ unknown_topic_expire_test() ->
   ?assertThrow(#{cause := unknown_topic_or_partition,
                  group := Group,
                  topic := Topic,
-                 response := received
+                 response := refreshed
                 }, wolff:send2(Producers, Topic, [Msg], AckFun)),
   [{{Group, Topic, partition_count}, ?UNKNOWN(Ts1)}] = ets:tab2list(?WOLFF_PRODUCERS_GLOBAL_TABLE),
   %% try to send again, should not result in a new ts
@@ -89,7 +88,8 @@ unknown_topic_expire_test() ->
   ok = create_topic(Topic),
   ?assertMatch({0, Offset} when is_integer(Offset),
                wolff:send_sync2(Producers, Topic, [Msg], 10_000)),
-  ?assertMatch([C] when C > 0, ets:lookup(?WOLFF_PRODUCERS_GLOBAL_TABLE, {Group, Topic, partition_count})),
+  ?assertMatch([C] when C > 0,
+               ets:lookup(?WOLFF_PRODUCERS_GLOBAL_TABLE, {Group, Topic, partition_count})),
   %% cleanup
   ok = wolff:stop_and_delete_supervised_producers(Producers),
   ?assertEqual([], ets:tab2list(?WOLFF_PRODUCERS_GLOBAL_TABLE)),
@@ -101,6 +101,38 @@ bad_producers_test() ->
   Producers = #{group => ?NO_GROUP, client_id => <<"foobar">>, topic => <<"test-topic">>},
   Msg = #{value => <<"v">>},
   ?assertError("cannot_add_topic_to_non_dynamic_producer", wolff:send_sync2(Producers, <<"test-topic">>, [Msg], 1000)),
+  ok.
+
+topic_add_remove_test() ->
+  _ = application:stop(wolff), %% ensure stopped
+  {ok, _} = application:ensure_all_started(wolff),
+  ClientId = <<"dynamic-topics-add-remove">>,
+  ClientCfg = client_config(),
+  {ok, ClientPid} = wolff:ensure_supervised_client(ClientId, ?HOSTS, ClientCfg),
+  Group = atom_to_binary(?FUNCTION_NAME),
+  ProducerCfg = #{required_acks => all_isr,
+                  group => Group,
+                  partitioner => 0
+                 },
+  {ok, Producers} = start(ClientId, ProducerCfg),
+  Topic = <<"test-topic">>,
+  ?assertEqual(ok, wolff:add_topic(Producers, Topic)),
+  ?assertMatch([{{Group, Topic, 0}, Pid}] when is_pid(Pid),
+               ets:lookup(?WOLFF_PRODUCERS_GLOBAL_TABLE, {Group, Topic, 0})),
+  ?assertEqual({error, unknown_topic_or_partition},
+               wolff:add_topic(Producers, <<"unknown-topic">>)),
+  ok = wolff:remove_topic(Producers, Topic),
+  ?assertMatch(#{known_topics := Topics,
+                 conns := Conns
+                } when map_size(Topics) =:= 0 andalso map_size(Conns) =:= 0,
+               sys:get_state(ClientPid)),
+  ?assertMatch([{{Group, <<"unknown-topic">>, partition_count}, ?UNKNOWN(_)}],
+               ets:tab2list(?WOLFF_PRODUCERS_GLOBAL_TABLE)),
+  %% cleanup
+  ok = wolff:stop_and_delete_supervised_producers(Producers),
+  ?assertEqual([], ets:tab2list(?WOLFF_PRODUCERS_GLOBAL_TABLE)),
+  ok = wolff:stop_and_delete_supervised_client(ClientId),
+  ok = application:stop(wolff),
   ok.
 
 %% helpers

@@ -70,7 +70,7 @@ get_producers_pid(ID) ->
     {ID, Pid, _Type, _Modules} when is_pid(Pid) ->
       Pid;
     Other ->
-      throw(#{cause => producers_not_found_uder_supervisor,
+      throw(#{cause => producers_not_found_under_supervisor,
               child_id => ID,
               lookup_result => Other
              })

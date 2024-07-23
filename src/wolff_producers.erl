@@ -22,6 +22,7 @@
 -export([pick_producer/2, lookup_producer/2, cleanup_workers_table/1]).
 %% Dynamic topics
 -export([start_supervised_dynamic/2, pick_producer2/3]).
+-export([add_topic/2, remove_topic/2]).
 
 %% gen_server callbacks
 -export([code_change/3, handle_call/3, handle_cast/2, handle_info/2, init/1, terminate/2]).
@@ -38,17 +39,17 @@
 
 -opaque producers() :: dynamic_topic_producers() | topic_producers() | linked_topic_producers().
 
-%% When calling APIs with dynmic producers, topic must be preented as function argument.
+%% When calling APIs with dynamic producers, topic must be provided as function argument.
 -type dynamic_topic_producers() ::
         #{partitioner := partitioner(),
-          client_id := wolff:client_id(),
+          client_id := client_id(),
           group := gname(),
           topic := ?DYNAMIC
          }.
 
 -type topic_producers() ::
         #{partitioner := partitioner(),
-          client_id := wolff:client_id(),
+          client_id := client_id(),
           group := gname(),
           topic := topic()
          }.
@@ -56,14 +57,16 @@
 -type linked_topic_producers() ::
         #{workers := #{partition() => pid()},
           partitioner := partitioner(),
-          client_id := wolff:client_id(),
+          client_id := client_id(),
           group := gname(),
           topic := topic()
          }.
 
 -type client_id() :: wolff:client_id().
 -type gname() :: ?NO_GROUP | wolff_client:producer_group().
--type id() :: ?NS_TOPIC({client, client_id()} | gname(), topic() | ?DYNAMIC).
+-type id() :: ?NS_TOPIC({client, client_id()}, topic()) %% No group
+            | ?NS_TOPIC(gname(), topic()) %% With group-name, but not dynamic
+            | ?NS_TOPIC(gname(), ?DYNAMIC). %% Dynamic producers
 -type topic() :: kpro:topic().
 -type partition() :: kpro:partition().
 -type config_key() :: name |
@@ -108,7 +111,7 @@ start_link(ClientId, ID, Config) ->
   end.
 
 %% @doc Start wolff_producer processes linked to caller.
--spec start_linked_producers(wolff:client_id() | pid(), topic(), config()) ->
+-spec start_linked_producers(client_id() | pid(), topic(), config()) ->
   {ok, producers()} | {error, any()}.
 start_linked_producers(ClientId, Topic, ProducerCfg) when is_binary(ClientId) ->
   {ok, ClientPid} = wolff_client_sup:find_client(ClientId),
@@ -117,7 +120,7 @@ start_linked_producers(ClientPid, Topic, ProducerCfg) when is_pid(ClientPid) ->
   ClientId = wolff_client:get_id(ClientPid),
   start_linked_producers(ClientId, ClientPid, Topic, ProducerCfg).
 
--spec start_linked_producers(wolff:client_id(), pid(), topic(), config()) ->
+-spec start_linked_producers(client_id(), pid(), topic(), config()) ->
   {ok, linked_topic_producers()} | {error, any()}.
 start_linked_producers(ClientId, ClientPid, Topic, ProducerCfg) ->
   MaxPartitions = maps:get(max_partitions, ProducerCfg, ?all_partitions),
@@ -147,7 +150,7 @@ get_group(ProducerCfg) ->
   maps:get(group, ProducerCfg, ?NO_GROUP).
 
 %% @doc Start supervised producers.
--spec start_supervised(wolff:client_id(), topic(), config()) -> {ok, producers()} | {error, any()}.
+-spec start_supervised(client_id(), topic(), config()) -> {ok, producers()} | {error, any()}.
 start_supervised(ClientId, Topic, ProducerCfg) ->
   Group = get_group(ProducerCfg),
   NS = resolve_ns(ClientId, Group),
@@ -199,7 +202,7 @@ stop_supervised(#{client_id := ClientId, group := Group, topic := Topic}) ->
   stop_supervised(ClientId, ID).
 
 %% @doc Ensure workers and clean up meta data.
--spec stop_supervised(wolff:client_id(), id()) -> ok.
+-spec stop_supervised(client_id(), id()) -> ok.
 stop_supervised(ClientId, ?NS_TOPIC(NS, Topic) = ID) ->
   wolff_producers_sup:ensure_absence(ID),
   case wolff_client_sup:find_client(ClientId) of
@@ -226,10 +229,26 @@ throw_unknown(ClientId, Group, Topic, Reason, RespFrom) ->
           response => RespFrom
          }).
 
+%% @doc Add a topic to dynamic producer.
+%% Returns `ok' if the topic is already addded.
+-spec add_topic(producers() | gname(), topic()) -> ok | {error, any()}.
+add_topic(#{group := Group}, Topic) ->
+  add_topic(Group, Topic);
 add_topic(Group, Topic) ->
   ID = ?NS_TOPIC(Group, ?DYNAMIC),
   Pid = wolff_producers_sup:get_producers_pid(ID),
   gen_server:call(Pid, {add_topic, Topic}, infinity).
+
+%% @doc Ensure a topic is removed from dynamic producer.
+%% Returns `ok' if the topic is already removed.
+-spec remove_topic(producers() | gname(), topic()) -> ok.
+remove_topic(#{group := Group}, Topic) ->
+  remove_topic(Group, Topic);
+remove_topic(Group, Topic) ->
+  ID = ?NS_TOPIC(Group, ?DYNAMIC),
+  ok = cleanup_workers_table(Group, Topic),
+  Pid = wolff_producers_sup:get_producers_pid(ID),
+  gen_server:call(Pid, {remove_topic, Topic}, infinity).
 
 %% @hidden Lookup producer pid (for test only).
 lookup_producer(#{workers := Workers}, Partition) ->
@@ -259,21 +278,21 @@ pick_producer2(#{client_id := ClientId,
                 } = Producers, Topic, Batch) ->
   T0 =/= ?DYNAMIC andalso error("cannot_add_topic_to_non_dynamic_producer"),
   Count0 = get_partition_cnt(ClientId, Group, Topic),
-  Count = resove_partitions_cnt(ClientId, Group, Topic, Count0),
+  Count = resolve_partitions_cnt(ClientId, Group, Topic, Count0),
   pick_producer3(Producers, Topic, Batch, Count).
 
-resove_partitions_cnt(_ClientId, _Group, _Topic, C) when is_integer(C) andalso C > 0 ->
+resolve_partitions_cnt(_ClientId, _Group, _Topic, C) when is_integer(C) andalso C > 0 ->
   C;
-resove_partitions_cnt(ClientId, Group, Topic, ?partition_count_unavailable) ->
-  resove_partitions_cnt(ClientId, Group, Topic, ?UNKNOWN(0));
-resove_partitions_cnt(ClientId, Group, Topic, ?UNKNOWN(Since)) ->
+resolve_partitions_cnt(ClientId, Group, Topic, ?partition_count_unavailable) ->
+  resolve_partitions_cnt(ClientId, Group, Topic, ?UNKNOWN(0));
+resolve_partitions_cnt(ClientId, Group, Topic, ?UNKNOWN(Since)) ->
   case (now_ts() - Since) > timer:seconds(?unknown_topic_cache_expire_seconds) of
     true ->
       case add_topic(Group, Topic) of
         ok ->
           get_partition_cnt(ClientId, Group, Topic);
         {error, unknown_topic_or_partition} ->
-          throw_unknown(ClientId, Group, Topic, unknown_topic_or_partition, received);
+          throw_unknown(ClientId, Group, Topic, unknown_topic_or_partition, refreshed);
         {error, Reason} ->
           throw(#{client_id => ClientId, group => Group, topics => Topic, error => Reason})
       end;
@@ -336,7 +355,7 @@ pick_partition(Count, random, _) ->
 pick_partition(Count, first_key_dispatch, [#{key := Key} | _]) ->
   erlang:phash2(Key) rem Count.
 
--spec init({wolff:client_id(), id(), config()}) -> {ok, map()}.
+-spec init({client_id(), id(), config()}) -> {ok, map()}.
 init({ClientId, ?NS_TOPIC(_, Topic) = ID, Config}) ->
   erlang:process_flag(trap_exit, true),
   self() ! ?rediscover_client,
@@ -435,6 +454,22 @@ handle_call({add_topic, Topic}, _From, #{producers_status := Status} = St) ->
       {NewSt, Reply} = do_add_topic(St, Topic),
       {reply, Reply, NewSt}
   end;
+handle_call({remove_topic, Topic}, _From,
+            #{client_id := ClientId,
+              producers_status := Status,
+              config := Config} = St) ->
+  Group = get_group(Config),
+  NewStatus = maps:remove(Topic, Status),
+  case wolff_client_sup:find_client(ClientId) of
+    {ok, Pid} ->
+      wolff_client:release_leader_conns(Pid, Group, Topic);
+    _ ->
+      %% client process down or restarting,
+      %% nothing to do in this case
+      %% because it should have the connections released already
+      ok
+  end,
+  {reply, ok, St#{producers_status := NewStatus}};
 handle_call(Call, From, St) ->
   log_error("unknown_call", #{call => Call, from => From, producer_id => producer_id(St)}),
   {reply, {error, unknown_call}, St}.
@@ -461,7 +496,7 @@ do_add_topic(#{my_id := ?NS_TOPIC(Group, ?DYNAMIC),
       {error, ?not_initialized(_, Reason) = TopicStatus1} ->
         {TopicStatus1, {error, Reason}}
     end,
-  {St#{producers_status => maps:merge(Status, TopicStatus)}, Reply}.
+  {St#{producers_status := maps:merge(Status, TopicStatus)}, Reply}.
 
 ensure_rediscover_client_timer(#{?rediscover_client_tref := ?no_timer} = St) ->
   Tref = erlang:send_after(?rediscover_client_delay, self(), ?rediscover_client),
@@ -494,8 +529,8 @@ init_producers(#{producers_status := Status, ?reinit_tref := Tref0} = St) ->
     _ ->
       erlang:send_after(?init_producers_delay, self(), ?init_producers)
   end,
-  St#{producers_status => NewStatus,
-      ?reinit_tref => Tref
+  St#{producers_status := NewStatus,
+      ?reinit_tref := Tref
      }.
 
 %% loop over the topics and try to initialize producers for them
@@ -578,6 +613,9 @@ maybe_restart_producers(#{client_id := ClientId, config := Config} = St, [{Topic
 
 -spec cleanup_workers_table(id()) -> ok.
 cleanup_workers_table(?NS_TOPIC(NS, Topic)) ->
+    cleanup_workers_table(NS, Topic).
+
+cleanup_workers_table(NS, Topic) ->
   Ms =
     case Topic =:= ?DYNAMIC of
       true ->

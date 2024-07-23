@@ -39,7 +39,9 @@
 
 %% Messaging APIs of dynamic producer.
 -export([send2/4,
-         send_sync2/4
+         send_sync2/4,
+         add_topic/2,
+         remove_topic/2
         ]).
 
 -export([check_connectivity/1,
@@ -153,6 +155,18 @@ send_sync(Producers, Batch, Timeout) ->
 send_sync2(Producers, Topic, Batch, Timeout) ->
   {_Partition, ProducerPid} = wolff_producers:pick_producer2(Producers, Topic, Batch),
   wolff_producer:send_sync(ProducerPid, Batch, Timeout).
+
+%% @doc Add a topic to dynamic producer.
+%% Returns `ok' if the topic is already addded.
+-spec add_topic(producers(), topic()) -> ok | {error, any()}.
+add_topic(Producers, Topic) ->
+  wolff_producers:add_topic(Producers, Topic).
+
+%% @doc Remove a topic from dynamic producer.
+%% Returns `ok' if the topic is already removed.
+-spec remove_topic(producers(), topic()) -> ok.
+remove_topic(Producers, Topic) ->
+  wolff_producers:remove_topic(Producers, Topic).
 
 %% @hidden For test only.
 get_producer(Producers, Partition) ->
