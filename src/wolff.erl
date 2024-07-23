@@ -28,12 +28,20 @@
 
 %% Supervised producer management APIs
 -export([ensure_supervised_producers/3,
+         ensure_supervised_dynamic_producers/2,
          stop_and_delete_supervised_producers/1
         ]).
 
 %% Messaging APIs
 -export([send/3,
          send_sync/3
+        ]).
+
+%% Messaging APIs of dynamic producer.
+-export([send2/4,
+         send_sync2/4,
+         add_topic/2,
+         remove_topic/2
         ]).
 
 -export([check_connectivity/1,
@@ -96,6 +104,12 @@ stop_producers(Producers) ->
 ensure_supervised_producers(ClientId, Topic, ProducerCfg) ->
   wolff_producers:start_supervised(ClientId, Topic, ProducerCfg).
 
+%% @doc Ensure supervised dynamic-producers are started.
+-spec ensure_supervised_dynamic_producers(client_id(), producers_cfg()) ->
+  {ok, producers()} | {error, any()}.
+ensure_supervised_dynamic_producers(ClientId, ProducerCfg) ->
+  wolff_producers:start_supervised_dynamic(ClientId, ProducerCfg).
+
 %% @doc Ensure supervised producers are stopped then deleted.
 -spec stop_and_delete_supervised_producers(wolff_producers:producers()) -> ok.
 stop_and_delete_supervised_producers(Producers) ->
@@ -108,14 +122,18 @@ stop_and_delete_supervised_producers(Producers) ->
 %% so it may use them to correlate the future `AckFun' evaluation.
 %% NOTE: This API has no backpressure,
 %%       high produce rate may cause execussive ram and disk usage.
-%% NOTE: It's possible that two or more batches get included into one produce request.
-%%       But a batch is never split into produce requests.
-%%       Make sure it will not exceed the `max_batch_bytes' limit when sending a batch.
 %% NOTE: In case producers are configured with `required_acks = none',
 %%       the second arg for callback function will always be `?UNKNOWN_OFFSET' (`-1').
 -spec send(producers(), [msg()], ack_fun()) -> {partition(), pid()}.
 send(Producers, Batch, AckFun) ->
   {Partition, ProducerPid} = wolff_producers:pick_producer(Producers, Batch),
+  ok = wolff_producer:send(ProducerPid, Batch, AckFun),
+  {Partition, ProducerPid}.
+
+%% @doc Topic as argument for dynamic producers, otherwise equivalent to `send/3'.
+-spec send2(producers(), topic(), [msg()], ack_fun()) -> {partition(), pid()}.
+send2(Producers, Topic, Batch, AckFun) ->
+  {Partition, ProducerPid} = wolff_producers:pick_producer2(Producers, Topic, Batch),
   ok = wolff_producer:send(ProducerPid, Batch, AckFun),
   {Partition, ProducerPid}.
 
@@ -131,6 +149,24 @@ send(Producers, Batch, AckFun) ->
 send_sync(Producers, Batch, Timeout) ->
   {_Partition, ProducerPid} = wolff_producers:pick_producer(Producers, Batch),
   wolff_producer:send_sync(ProducerPid, Batch, Timeout).
+
+%% @doc Topic as argument for dynamic producers, otherwise equivalent to `send_sync/3'.
+-spec send_sync2(producers(), topic(), [msg()], timeout()) -> {partition(), offset_reply()}.
+send_sync2(Producers, Topic, Batch, Timeout) ->
+  {_Partition, ProducerPid} = wolff_producers:pick_producer2(Producers, Topic, Batch),
+  wolff_producer:send_sync(ProducerPid, Batch, Timeout).
+
+%% @doc Add a topic to dynamic producer.
+%% Returns `ok' if the topic is already addded.
+-spec add_topic(producers(), topic()) -> ok | {error, any()}.
+add_topic(Producers, Topic) ->
+  wolff_producers:add_topic(Producers, Topic).
+
+%% @doc Remove a topic from dynamic producer.
+%% Returns `ok' if the topic is already removed.
+-spec remove_topic(producers(), topic()) -> ok.
+remove_topic(Producers, Topic) ->
+  wolff_producers:remove_topic(Producers, Topic).
 
 %% @hidden For test only.
 get_producer(Producers, Partition) ->

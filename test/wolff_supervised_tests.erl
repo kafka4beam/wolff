@@ -82,7 +82,7 @@ different_producers_same_topic_test() ->
   {ok, _} = application:ensure_all_started(wolff),
   ClientId = <<"same-topic">>,
   ClientCfg = client_config(),
-  {ok, _ClientPid} = wolff:ensure_supervised_client(ClientId, ?HOSTS, ClientCfg),
+  {ok, ClientPid} = wolff:ensure_supervised_client(ClientId, ?HOSTS, ClientCfg),
   Topic = <<"test-topic">>,
   ProducerName0 = <<"p0">>,
   Group0 = <<"a0">>,
@@ -113,13 +113,22 @@ different_producers_same_topic_test() ->
                          filelib:is_dir(filename:join([BaseDir, File])),
                          lists:member(list_to_binary(File), [Dir0, Dir1])],
   ?assertMatch([_, _], ReplayQDirs, #{base_dir => Files}),
+  ?assertMatch(#{known_topics := #{Topic := #{Group0 := true, Group1 := true}},
+                 conns := #{{Topic, 0} := _}
+                }, sys:get_state(ClientPid)),
   %% We now stop one of the producers.  The other should keep working.
   ok = wolff:stop_and_delete_supervised_producers(Producers0),
-  %% Some time for `wolff_client:delete_producers_metadata' to be processed.
-  timer:sleep(100),
+  ?assertMatch(#{known_topics := #{Topic := #{Group1 := true}},
+                 conns := #{{Topic, 0} := _}
+                }, sys:get_state(ClientPid)),
+  ?assertMatch(#{}, sys:get_state(ClientPid)),
   {_Partition1B, _ProducerPid1B} = wolff:send(Producers1, [Msg], AckFun),
   receive acked -> ok end,
   ok = wolff:stop_and_delete_supervised_producers(Producers1),
+  ?assertMatch(#{known_topics := Topics,
+                 conns := Conns
+                } when map_size(Topics) =:= 0 andalso map_size(Conns) =:= 0,
+               sys:get_state(ClientPid)),
   ok = wolff:stop_and_delete_supervised_client(ClientId),
   ok = application:stop(wolff),
   ok.
@@ -523,26 +532,25 @@ producer_config(Name) ->
    }.
 
 key(Name) ->
-  iolist_to_binary(io_lib:format("~p/~p/~p", [Name, calendar:local_time(),
-                                              erlang:system_time()])).
+  iolist_to_binary(io_lib:format("~0p/~0p/~0p", [Name, calendar:local_time(), erlang:system_time()])).
 
 count_partitions(Topic) ->
-    Cmd = kafka_topic_cmd_base(Topic) ++ " --describe | grep Configs | awk '{print $4}'",
-    list_to_integer(string:strip(os:cmd(Cmd), right, $\n)).
+  Cmd = kafka_topic_cmd_base(Topic) ++ " --describe | grep Configs | awk '{print $4}'",
+  list_to_integer(string:strip(os:cmd(Cmd), right, $\n)).
 
 ensure_partitions(Topic, Partitions) ->
-    Cmd = kafka_topic_cmd_base(Topic) ++ " --alter --partitions " ++ integer_to_list(Partitions),
-    Result = os:cmd(Cmd),
-    Pattern = "Adding partitions succeeded!",
-    ?assert(string:str(Result, Pattern) > 0),
-    ok.
+  Cmd = kafka_topic_cmd_base(Topic) ++ " --alter --partitions " ++ integer_to_list(Partitions),
+  Result = os:cmd(Cmd),
+  Pattern = "Adding partitions succeeded!",
+  ?assert(string:str(Result, Pattern) > 0),
+  ok.
 
 kafka_topic_cmd_base(Topic) when is_binary(Topic) ->
-    kafka_topic_cmd_base(binary_to_list(Topic));
+  kafka_topic_cmd_base(binary_to_list(Topic));
 kafka_topic_cmd_base(Topic) ->
-    "docker exec wolff-kafka-1 /opt/kafka/bin/kafka-topics.sh" ++
-    " --zookeeper zookeeper:2181" ++
-    " --topic '" ++ Topic ++ "'".
+  "docker exec wolff-kafka-1 /opt/kafka/bin/kafka-topics.sh" ++
+  " --zookeeper zookeeper:2181" ++
+  " --topic '" ++ Topic ++ "'".
 
 get_telemetry_seq(Table, Event) ->
     wolff_tests:get_telemetry_seq(Table, Event).
