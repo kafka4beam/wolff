@@ -1,12 +1,17 @@
+* 3.0.2
+  - Fixed an issue where metadata was not correctly updated after terminating a producer.
+
+* 3.0.1
+  - Support dynamic topics for supervised producers.
+    Call `wolff:ensure_supervised_dynamic_producers(ClientId, #{group => GroupName, ...})` to
+    start a group-producer with no topics added in advance.
+    And call `wolff:send2` or `wolff:send_sync2` to publish messages with topic provided as an argument.
+
 * 3.0.0
   - Deleted `round_robin` partition strategy.
   - Change `alias` to `group`.
     Add `#{group => <<"group1">>}` to producer config for namespacing the topic,
     so multiple producers for one topic will not clash each other when sharing the same client.
-  - Support dynamic topics for supervised producers.
-    Call `wolff:ensure_supervised_dynamic_producers(ClientId, #{group => GroupName, ...})` to
-    start a group-producer with no topics added in advance.
-    And call `wolff:send2` or `wolff:send_sync2` to publish messages with topic provided as an argument.
 
 * 2.0.0
   - Added the `alias` producer config option to make producers to the same topic be independent.
