@@ -244,7 +244,7 @@ do_release_leader_conns(Group, Topic, St) ->
           %% Last entry: we may drop the connection metadata
           KnownTopics = maps:remove(Topic, KnownTopics0),
           Conns = close_connections(Conns0, Topic),
-          Topics = maps:remove(Group, Topics0),
+          Topics = maps:remove(Topic, Topics0),
           St#{metadata_ts := Topics, conns := Conns, known_topics := KnownTopics};
       #{Topic := #{Group := true} = KnownProducers0} ->
           %% Connection is still being used by other producers.

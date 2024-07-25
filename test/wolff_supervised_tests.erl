@@ -113,21 +113,25 @@ different_producers_same_topic_test() ->
                          filelib:is_dir(filename:join([BaseDir, File])),
                          lists:member(list_to_binary(File), [Dir0, Dir1])],
   ?assertMatch([_, _], ReplayQDirs, #{base_dir => Files}),
-  ?assertMatch(#{known_topics := #{Topic := #{Group0 := true, Group1 := true}},
+  ?assertMatch(#{metadata_ts := #{Topic := _},
+                 known_topics := #{Topic := #{Group0 := true, Group1 := true}},
                  conns := #{{Topic, 0} := _}
                 }, sys:get_state(ClientPid)),
   %% We now stop one of the producers.  The other should keep working.
   ok = wolff:stop_and_delete_supervised_producers(Producers0),
-  ?assertMatch(#{known_topics := #{Topic := #{Group1 := true}},
+  ?assertMatch(#{metadata_ts := #{Topic := _},
+                 known_topics := #{Topic := #{Group1 := true}},
                  conns := #{{Topic, 0} := _}
                 }, sys:get_state(ClientPid)),
   ?assertMatch(#{}, sys:get_state(ClientPid)),
   {_Partition1B, _ProducerPid1B} = wolff:send(Producers1, [Msg], AckFun),
   receive acked -> ok end,
   ok = wolff:stop_and_delete_supervised_producers(Producers1),
-  ?assertMatch(#{known_topics := Topics,
-                 conns := Conns
-                } when map_size(Topics) =:= 0 andalso map_size(Conns) =:= 0,
+  EmptyMap = #{},
+  ?assertMatch(#{metadata_ts := EmptyMap,
+                 known_topics := EmptyMap,
+                 conns := EmptyMap
+                },
                sys:get_state(ClientPid)),
   ok = wolff:stop_and_delete_supervised_client(ClientId),
   ok = application:stop(wolff),

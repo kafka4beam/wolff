@@ -33,16 +33,19 @@ dynamic_topics_test() ->
   receive acked -> ok end,
   ?assertMatch({0, Offset} when is_integer(Offset), wolff:send_sync2(Producers, T2, [Msg], 10_000)),
   ?assertMatch({0, Offset} when is_integer(Offset), wolff:send_sync2(Producers, T3, [Msg], 10_000)),
-  ?assertMatch(#{known_topics := #{T1 := _, T2 := _, T3 := _},
+  ?assertMatch(#{metadata_ts := #{T1 := _, T2 := _, T3 := _},
+                 known_topics := #{T1 := _, T2 := _, T3 := _},
                  conns := #{{T1, 0} := _, {T2, 0} := _, {T3, 0} := _}
                 }, sys:get_state(ClientPid)),
   %% We now stop one of the producers.  The other should keep working.
   ok = wolff:stop_and_delete_supervised_producers(Producers),
   %% idempotent
   ok = wolff:stop_and_delete_supervised_producers(Producers),
-  ?assertMatch(#{known_topics := Topics,
-                 conns := Conns
-                } when map_size(Topics) =:= 0 andalso map_size(Conns) =:= 0,
+  EmptyMap = #{},
+  ?assertMatch(#{metadata_ts := EmptyMap,
+                 known_topics := EmptyMap,
+                 conns := EmptyMap
+                },
                sys:get_state(ClientPid)),
   ?assertEqual([], ets:tab2list(?WOLFF_PRODUCERS_GLOBAL_TABLE)),
   ok = wolff:stop_and_delete_supervised_client(ClientId),
@@ -122,9 +125,11 @@ topic_add_remove_test() ->
   ?assertEqual({error, unknown_topic_or_partition},
                wolff:add_topic(Producers, <<"unknown-topic">>)),
   ok = wolff:remove_topic(Producers, Topic),
-  ?assertMatch(#{known_topics := Topics,
-                 conns := Conns
-                } when map_size(Topics) =:= 0 andalso map_size(Conns) =:= 0,
+  EmptyMap = #{},
+  ?assertMatch(#{metadata_ts := EmptyMap,
+                 known_topics := EmptyMap,
+                 conns := EmptyMap
+                },
                sys:get_state(ClientPid)),
   ?assertMatch([{{Group, <<"unknown-topic">>, partition_count}, ?UNKNOWN(_)}],
                ets:tab2list(?WOLFF_PRODUCERS_GLOBAL_TABLE)),
