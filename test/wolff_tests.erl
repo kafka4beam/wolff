@@ -199,6 +199,49 @@ send_smallest_msg_max_batch_test() ->
   ets:delete(CntrEventsTable),
   deinstall_event_logging(?FUNCTION_NAME).
 
+send_sync_timeout_test() ->
+  CntrEventsTable = ets:new(cntr_events, [public]),
+  install_event_logging(?FUNCTION_NAME, CntrEventsTable, false),
+  ClientCfg = client_config(),
+  {ok, Client} = start_client(<<"client-1">>, ?HOSTS, ClientCfg),
+  ProducerCfg = #{partitioner => first_key_dispatch},
+  {ok, Producers} = wolff:start_producers(Client, <<"test-topic">>, ProducerCfg),
+  Msg = #{key => ?KEY, value => <<"value">>},
+  ok = meck:new(kpro, [non_strict, no_history, no_link, passthrough]),
+  ok = meck:expect(kpro, send, 2,
+    fun(Conn, Req) ->
+      timer:sleep(1000),
+      meck:passthrough([Conn, Req])
+    end),
+  try
+    ?assertError(timeout, wolff:send_sync(Producers, [Msg], 1)),
+    {Partition, Offset} = wolff:send_sync(Producers, [Msg], 4000),
+    ok = expect_stale_reply(Partition, Offset - 1),
+    ok = wolff:stop_producers(Producers),
+    ok = stop_client(Client),
+    ets:delete(CntrEventsTable),
+    deinstall_event_logging(?FUNCTION_NAME)
+  after
+    meck:unload(kpro)
+  end.
+
+expect_stale_reply(Partition, Offset) ->
+    OTP = list_to_integer(erlang:system_info(otp_release)),
+    receive
+        {_, Partition, Offset} when OTP >= 26 ->
+            error({unexpected_receive, Partition, Offset});
+        {_, Partition, Offset} ->
+            ok
+    after
+        10 ->
+            case OTP >= 26 of
+                true ->
+                    ok;
+                false ->
+                    error({unexpected_timeout, Partition, Offset})
+            end
+    end.
+
 send_sync_test() ->
   CntrEventsTable = ets:new(cntr_events, [public]),
   install_event_logging(?FUNCTION_NAME, CntrEventsTable, false),

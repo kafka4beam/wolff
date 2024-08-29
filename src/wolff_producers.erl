@@ -731,7 +731,7 @@ start_new_producers(#{client_id := ClientId,
       ok
   end.
 
--if(OTP_RELEASE >= "26").
+-if(?OTP_RELEASE >= 26).
 ets_lookup_val(Tab, Key, Default) ->
   ets:lookup_element(Tab, Key, 2, Default).
 -else.

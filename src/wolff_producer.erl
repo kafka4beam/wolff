@@ -182,7 +182,7 @@ send(Pid, [_ | _] = Batch0, AckFun) ->
 %% Raise error exception in case produce pid is down or when timed out.
 -spec send_sync(pid(), [wolff:msg()], timeout()) -> {partition(), offset_reply()}.
 send_sync(Pid, Batch0, Timeout) ->
-  Caller = self(),
+  Caller = caller(),
   Mref = erlang:monitor(process, Pid),
   %% synced local usage, safe to use anonymous fun
   AckFun = fun(Partition, BaseOffset) ->
@@ -199,8 +199,15 @@ send_sync(Pid, Batch0, Timeout) ->
       erlang:error({producer_down, Reason})
   after
     Timeout ->
+      deref_caller(Caller),
       erlang:demonitor(Mref, [flush]),
-      erlang:error(timeout)
+      receive
+        {Mref, Partition, BaseOffset} ->
+          {Partition, BaseOffset}
+      after
+        0 ->
+          erlang:error(timeout)
+      end
   end.
 
 init(St) ->
@@ -885,8 +892,10 @@ enqueue_calls(Calls, #{replayq := Q,
                        },
                    Overflow).
 
-maybe_reply_queued(?SEND_REQ(?no_queued_reply, _, _)) -> ok;
-maybe_reply_queued(?SEND_REQ({Pid, Ref}, _, _)) -> erlang:send(Pid, {Ref, ?queued}).
+maybe_reply_queued(?SEND_REQ(?no_queued_reply, _, _)) ->
+    ok;
+maybe_reply_queued(?SEND_REQ({Caller, Ref}, _, _)) ->
+    erlang:send(Caller, {Ref, ?queued}).
 
 eval_ack_cb(?ACK_CB(AckFun, Partition), BaseOffset) when is_function(AckFun, 2) ->
   ok = AckFun(Partition, BaseOffset); %% backward compatible
@@ -1008,6 +1017,17 @@ hex_digit(N) when N >= 0, N =< 9 ->
     N + $0;
 hex_digit(N) when N > 9, N =< 15 ->
     N + $a - 10.
+
+%% Alias in OTP 24/25 has memory leak.
+%% https://github.com/erlang/otp/issues/6947
+-if(?OTP_RELEASE >= 26).
+caller() -> erlang:alias([reply]).
+deref_caller(Alias) ->
+    erlang:unalias(Alias).
+-else.
+caller() -> self().
+deref_caller(_Pid) -> ok.
+-endif.
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").

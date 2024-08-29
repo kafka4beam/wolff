@@ -43,7 +43,7 @@ jobs:
       with:
         version-type: strict
         otp-version: ${{matrix.otp}}
-        rebar3-version: '3.17.0'
+        rebar3-version: '3.20.0'
 
     # Check versions and syntax of app and appup
     - name: Ensure version consistency
@@ -56,4 +56,4 @@ jobs:
     - name: Run tests
       run: |
           ./start-kafka.sh
-          make eunit || (docker-compose logs; false)
+          make eunit || (docker compose logs; false)
