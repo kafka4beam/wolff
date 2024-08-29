@@ -44,5 +44,5 @@ coveralls:
 	@rebar3 coveralls send
 
 hex-publish: clean
-	@rebar3 hex publish
-	@rebar3 hex docs
+	@rebar3 hex publish --repo=hexpm
+	@rebar3 hex docs --repo=hexpm
