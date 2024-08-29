@@ -201,7 +201,13 @@ send_sync(Pid, Batch0, Timeout) ->
     Timeout ->
       deref_caller(Caller),
       erlang:demonitor(Mref, [flush]),
-      erlang:error(timeout)
+      receive
+        {Mref, Partition, BaseOffset} ->
+          {Partition, BaseOffset}
+      after
+        0 ->
+          erlang:error(timeout)
+      end
   end.
 
 init(St) ->
