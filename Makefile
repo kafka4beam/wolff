@@ -45,4 +45,3 @@ coveralls:
 
 hex-publish: clean
 	@rebar3 hex publish --repo=hexpm
-	@rebar3 hex docs --repo=hexpm
