@@ -1,3 +1,6 @@
+* 3.0.3
+  - Use alias for OTP_RELEASE >= 24 to avoid contaminating send_sync caller's mailbox get contaminated by stale replies.
+
 * 3.0.2
   - Fixed an issue where metadata was not correctly updated after terminating a producer.
 
