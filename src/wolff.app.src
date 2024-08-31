@@ -1,6 +1,6 @@
 {application, wolff,
  [{description, "Kafka's publisher"},
-  {vsn, "3.0.3"},
+  {vsn, "3.0.4"},
   {registered, []},
   {applications,
    [kernel,

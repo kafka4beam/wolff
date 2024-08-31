@@ -1,3 +1,6 @@
+* 3.0.4
+  - Upgrade to kafka_protocol-4.1.8
+
 * 3.0.3
   - Use alias for OTP_RELEASE >= 24 to avoid contaminating send_sync caller's mailbox get contaminated by stale replies.
 
