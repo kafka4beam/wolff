@@ -324,20 +324,25 @@ replayq_overflow_test() ->
   Msg = #{key => <<>>, value => <<"12345">>},
   Batch = [Msg, Msg],
   BatchSize = wolff_producer:batch_bytes(Batch),
-  ProducerCfg = #{max_batch_bytes => 1, %% make sure not collecting calls into one batch
+  LingerMs = 100,
+  ProducerCfg = #{max_batch_bytes => 1, %% ensure send one call at a time
                   replayq_max_total_bytes => BatchSize,
                   required_acks => all_isr,
-                  max_linger_ms => 1000 %% do not send to kafka immediately
+                  max_linger_ms => LingerMs, %% delay enqueue
+                  max_linger_bytes => BatchSize + 1 %% delay enqueue
                  },
   {ok, Producers} = wolff:start_producers(Client, <<"test-topic">>, ProducerCfg),
+  Pid = wolff_producers:lookup_producer(Producers, 0),
+  ?assert(is_process_alive(Pid)),
   TesterPid = self(),
   AckFun1 = fun(_Partition, BaseOffset) -> TesterPid ! {ack_1, BaseOffset}, ok end,
   AckFun2 = fun(_Partition, BaseOffset) -> TesterPid ! {ack_2, BaseOffset}, ok end,
   SendF = fun(AckFun) -> wolff:send(Producers, Batch, AckFun) end,
   %% send two batches to overflow one
-  spawn(fun() -> SendF(AckFun1) end),
+  proc_lib:spawn_link(fun() -> SendF(AckFun1) end),
   timer:sleep(1), %% ensure order
-  spawn(fun() -> SendF(AckFun2) end),
+  proc_lib:spawn_link(fun() -> SendF(AckFun2) end),
+  timer:sleep(LingerMs * 2),
   try
     %% pushed out of replayq due to overflow
     receive
@@ -363,7 +368,7 @@ replayq_overflow_test() ->
   [1] = get_telemetry_seq(CntrEventsTable, [wolff, dropped_queue_full]),
   ?assert_eq_optional_tail(
      wolff_test_utils:dedup_list(get_telemetry_seq(CntrEventsTable, [wolff, queuing])),
-     [0,1,2,1,0]),
+     [0,2,1,0]),
   ?assert_eq_optional_tail(
      wolff_test_utils:dedup_list(get_telemetry_seq(CntrEventsTable, [wolff, inflight])),
      [0,1,0]),
@@ -610,8 +615,10 @@ test_message_too_large() ->
     %% then it should retry sending one message at a time
     ProducerCfg = #{partitioner => fun(_, _) -> 0 end,
                     max_batch_bytes => MaxMessageBytes * 3,
-                    %% ensure batching
-                    max_linger_ms => 100
+                    %% ensure batching by delay enqueue by 100 seconds
+                    max_linger_ms => 100,
+                    %% ensure linger is not expired by reaching size
+                    max_linger_bytes => MaxMessageBytes * 100
                    },
     {ok, Producers} = wolff:start_producers(Client, TopicBin, ProducerCfg),
     MaxBytesCompensateOverhead = MaxMessageBytes - ?BATCHING_OVERHEAD - 7,
@@ -620,7 +627,7 @@ test_message_too_large() ->
       Ref = make_ref(),
       Self = self(),
       AckFun = {fun ?MODULE:ack_cb/4, [Self, Ref]},
-      _ = wolff:send(Producers, Batch, AckFun),
+      spawn(fun() -> wolff:send(Producers, Batch, AckFun) end),
       fun() -> ?WAIT(5000, {ack, Ref, _Partition, BaseOffset}, BaseOffset) end
     end,
     %% Must be ok to send one message

@@ -330,7 +330,7 @@ pick_next_alive(LookupFn, Partition, Count) ->
   pick_next_alive(LookupFn, (Partition + 1) rem Count, Count, _Tried = 1).
 
 pick_next_alive(_LookupFn, _Partition, Count, Count) ->
-  throw(#{cause => all_producers_down});
+  throw(#{cause => all_producers_down, count => Count});
 pick_next_alive(LookupFn, Partition, Count, Tried) ->
   Pid = LookupFn(Partition),
   case is_alive(Pid) of

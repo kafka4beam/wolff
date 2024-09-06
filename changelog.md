@@ -1,5 +1,8 @@
 * 4.0.0
   - Delete global stats (deprecated since 1.9).
+  - Move linger delay to front of the buffer queue.
+    The default value for `max_linger_ms` is `0` as before.
+    Setting `max_linger_ms=10` will make the disk write batch larger when buffer is configured to disk mode or disk-offload mode.
 
 * 3.0.4
   - Upgrade to kafka_protocol-4.1.8
