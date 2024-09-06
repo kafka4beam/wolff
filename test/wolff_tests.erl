@@ -491,49 +491,8 @@ replayq_offload_test() ->
   ets:delete(CntrEventsTable),
   deinstall_event_logging(?FUNCTION_NAME).
 
-stats_test() ->
-  CntrEventsTable = ets:new(cntr_events, [public]),
-  install_event_logging(?FUNCTION_NAME, CntrEventsTable, false),
-  ClientId = <<"client-stats-test">>,
-  _ = application:stop(wolff), %% ensure stopped
-  {ok, _} = application:ensure_all_started(wolff),
-  ?assertMatch(#{send_oct := 0, send_cnt := 0, recv_cnt := 0, recv_oct := 0},
-               wolff_stats:getstat()),
-  ?assertMatch(#{send_oct := 0, send_cnt := 0, recv_cnt := 0, recv_oct := 0},
-               wolff_stats:getstat(ClientId, <<"nonexisting-topic">>, 0)),
-  ClientCfg = client_config(),
-  {ok, Client} = start_client(ClientId, ?HOSTS, ClientCfg),
-  ProducerCfg0 = producer_config(),
-  ProducerCfg = ProducerCfg0#{required_acks => leader_only},
-  {ok, Producers} = wolff:start_producers(Client, <<"test-topic">>, ProducerCfg),
-  Msg = #{key => ?KEY, value => <<"value">>},
-  {Partition, BaseOffset} = wolff:send_sync(Producers, [Msg], 3000),
-  io:format(user, "\nmessage produced to partition ~p at offset ~p\n",
-            [Partition, BaseOffset]),
-  ?assertMatch(#{send_oct := O, send_cnt := C,
-                 recv_oct := O, recv_cnt := C} when O > 0 andalso C > 0,
-               wolff_stats:getstat()),
-  ?assertMatch(#{send_oct := O, send_cnt := C,
-                 recv_oct := O, recv_cnt := C} when O > 0 andalso C > 0,
-               wolff_stats:getstat(ClientId, <<"test-topic">>, Partition)),
-  ok = wolff:stop_producers(Producers),
-  ok = stop_client(Client),
-  ok = application:stop(wolff),
-  ?assertEqual(undefined, whereis(wolff_sup)),
-  ?assertEqual(undefined, whereis(wolff_stats)),
-  ?assert_eq_optional_tail(
-     wolff_test_utils:dedup_list(get_telemetry_seq(CntrEventsTable, [wolff, queuing])),
-     [0, 1, 0]),
-  ?assert_eq_optional_tail(
-     wolff_test_utils:dedup_list(get_telemetry_seq(CntrEventsTable, [wolff, inflight])),
-     [0, 1, 0]),
-  [1] = get_telemetry_seq(CntrEventsTable, [wolff, success]),
-  ets:delete(CntrEventsTable),
-  deinstall_event_logging(?FUNCTION_NAME),
-  ok.
-
 check_connectivity_test() ->
-  ClientId = <<"client-stats-test">>,
+  ClientId = <<"client-connectivity-test">>,
   _ = application:stop(wolff), %% ensure stopped
   {ok, _} = application:ensure_all_started(wolff),
   ClientCfg = client_config(),
@@ -551,7 +510,7 @@ check_connectivity_test() ->
   ok = application:stop(wolff).
 
 client_state_upgrade_test() ->
-  ClientId = <<"client-stats-test">>,
+  ClientId = <<"client-state-upgrade-test">>,
   _ = application:stop(wolff), %% ensure stopped
   {ok, _} = application:ensure_all_started(wolff),
   ClientCfg = client_config(),
@@ -772,8 +731,7 @@ to_old_client_state(St0) ->
 client_config() -> #{}.
 
 producer_config() ->
-  #{replayq_dir => "test-data",
-    enable_global_stats => true}.
+  #{replayq_dir => "test-data"}.
 
 key(Name) ->
   iolist_to_binary(io_lib:format("~p/~p", [Name, calendar:local_time()])).

@@ -64,7 +64,6 @@
                        compression => kpro:compress_option(),
                        drop_if_highmem => boolean(),
                        telemetry_meta_data => map(),
-                       enable_global_stats => boolean(),
                        max_partitions => pos_integer()
                       }.
 
@@ -80,7 +79,6 @@
                           compression => kpro:compress_option(),
                           drop_if_highmem => boolean(),
                           telemetry_meta_data => map(),
-                          enable_global_stats => boolean(),
                           max_partitions => pos_integer()
                          }.
 
@@ -117,7 +115,6 @@
                   , sent_reqs_count := non_neg_integer()
                   , inflight_calls := non_neg_integer()
                   , topic := topic()
-                  , enable_global_stats := boolean()
                   }.
 
 %% @doc Start a per-partition producer worker.
@@ -136,9 +133,6 @@
 %% * `max_send_ahead': Number of batches to be sent ahead without receiving ack for
 %%    the last request. Must be 0 if messages must be delivered in strict order.
 %% * `compression': `no_compression', `snappy' or `gzip'.
-%% * `enable_global_stats': `true' | `false'.
-%%    Introduced in 1.9.0, default is `false'. Set to `true' to enalbe a global
-%%    send/receive stats table created in `wolff_stats' module.
 -spec start_link(wolff:client_id(), topic(), partition(), pid() | ?conn_down(any()), config_in()) ->
   {ok, pid()} | {error, any()}.
 start_link(ClientId, Topic, Partition, MaybeConnPid, Config) ->
@@ -269,8 +263,7 @@ do_init(#{client_id := ClientId,
       sent_reqs_count => 0,
       inflight_calls => 0,
       conn := undefined,
-      client_id => ClientId,
-      enable_global_stats => maps:get(enable_global_stats, Config0, false)
+      client_id => ClientId
   }.
 
 handle_call(stop, From, St) ->
@@ -285,8 +278,7 @@ handle_info({do_init, St0}, _) ->
 handle_info(?linger_expire, St) ->
   {noreply, maybe_send_to_kafka(St#{?linger_expire_timer := false})};
 handle_info(?SEND_REQ(_, Batch, _) = Call, #{config := #{max_batch_bytes := Limit}} = St0) ->
-  {Calls, Cnt, Oct} = collect_send_calls([Call], 1, batch_bytes(Batch), Limit),
-  ok = recv_stats(St0, #{cnt => Cnt, oct => Oct}),
+  {Calls, _CollectedBytes} = collect_send_calls([Call], batch_bytes(Batch), Limit),
   St1 = enqueue_calls(Calls, St0),
   St = maybe_send_to_kafka(St1),
   {noreply, St};
@@ -510,7 +502,6 @@ send_to_kafka(#{sent_reqs := SentReqs,
              inflight_calls := NewInflightCalls
             },
   ok = request_async(Conn, Req),
-  ok = send_stats(St2, Items),
   St3 = maybe_fake_kafka_ack(NoAck, Sent, St2),
   maybe_send_to_kafka(St3).
 
@@ -781,19 +772,6 @@ log_error(Topic, Partition, Msg, Args) ->
 log(Level, Report) ->
     logger:log(Level, Report).
 
-send_stats(#{enable_global_stats := false}, _) ->
-  ok;
-send_stats(#{client_id := ClientId, topic := Topic, partition := Partition}, Items) ->
-  Batch = get_batch_from_queue_items(Items),
-  {Cnt, Oct} =
-    lists:foldl(fun(Msg, {C, O}) -> {C + 1, O + oct(Msg)} end, {0, 0}, Batch),
-  ok = wolff_stats:sent(ClientId, Topic, Partition, #{cnt => Cnt, oct => Oct}).
-
-recv_stats(#{enable_global_stats := false}, _) ->
-  ok;
-recv_stats(#{client_id := ClientId, topic := Topic, partition := Partition}, Increments) ->
-  ok = wolff_stats:recv(ClientId, Topic, Partition, Increments).
-
 %% Estimation of size in bytes of one payload sent to Kafka.
 %% According to Kafka protocol, a v2 record consists of below fields:
 %%   Length => varint              # varint_bytes(SizeOfAllRestFields)
@@ -848,15 +826,15 @@ request_async(Conn, Req) when is_pid(Conn) ->
   ok = kpro:send(Conn, Req).
 
 %% Collect all send requests which are already in process mailbox
-collect_send_calls(Calls, Count, Size, Limit) when Size >= Limit ->
-  {lists:reverse(Calls), Count, Size};
-collect_send_calls(Calls, Count, Size, Limit) ->
+collect_send_calls(Calls, Size, Limit) when Size >= Limit ->
+  {lists:reverse(Calls), Size};
+collect_send_calls(Calls, Size, Limit) ->
   receive
     ?SEND_REQ(_, Batch, _) = Call ->
-      collect_send_calls([Call | Calls], Count + 1, Size + batch_bytes(Batch), Limit)
+      collect_send_calls([Call | Calls], Size + batch_bytes(Batch), Limit)
   after
     0 ->
-      {lists:reverse(Calls), Count, Size}
+      {lists:reverse(Calls), Size}
   end.
 
 enqueue_calls(Calls, #{replayq := Q,

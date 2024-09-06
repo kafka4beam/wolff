@@ -26,18 +26,9 @@ init([]) ->
   SupFlags = #{strategy => one_for_all,
                intensity => 10,
                period => 5},
-  Children = [stats_worker(), client_sup(), producers_sup()],
+  Children = [client_sup(), producers_sup()],
   ets:new(?WOLFF_PRODUCERS_GLOBAL_TABLE, [named_table, public, ordered_set, {read_concurrency, true}]),
   {ok, {SupFlags, Children}}.
-
-stats_worker() ->
-  #{id => wolff_stats,
-    start => {wolff_stats, start_link, []},
-    restart => permanent,
-    shutdown => 2000,
-    type => worker,
-    modules => [wolff_stats]
-   }.
 
 client_sup() ->
   #{id => wolff_client_sup,
