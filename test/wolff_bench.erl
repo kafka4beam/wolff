@@ -15,15 +15,13 @@ start(WorkersCnt) ->
   SendFun = fun(Msgs) ->
                 {_, _} = wolff:send_sync(Producers, Msgs, timer:seconds(10))
             end,
-  ok = spawn_workers(SendFun, WorkersCnt),
-  ok = spawn_reporter(ClientId, maps:size(Producers)).
+  ok = spawn_workers(SendFun, WorkersCnt).
 
 start_producers(Client) ->
   ProducerCfg = #{required_acks => all_isr,
                   max_batch_bytes => 800*1000,
                   max_linger_ms => 1000,
-                  max_send_ahead => 100,
-                  enable_global_stats => true
+                  max_send_ahead => 100
                  },
   wolff:start_producers(Client, ?TOPIC, ProducerCfg).
 
@@ -41,17 +39,3 @@ worker_loop(SendFun) ->
   Msgs = [#{key => <<I>>, value => Value} || I <- lists:seq(1,100)],
   SendFun(Msgs),
   worker_loop(SendFun).
-
-spawn_reporter(ClientId, Partitions) ->
-  _ = spawn_link(fun() -> reporter_loop(ClientId, Partitions, 0, 0) end),
-  ok.
-
-reporter_loop(ClientId, Partitions, LastCnt, LastOct) ->
-  IntervalSec = 5,
-  #{send_cnt := Cnt, send_oct := Oct} = wolff_stats:getstat(),
-  io:format("count=~p/s bytes=~p/s\n", [(Cnt - LastCnt) / IntervalSec,
-                                        (Oct - LastOct) / IntervalSec]),
-  timer:sleep(timer:seconds(IntervalSec)),
-  reporter_loop(ClientId, Partitions, Cnt, Oct).
-
-

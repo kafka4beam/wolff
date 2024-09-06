@@ -1,3 +1,6 @@
+* 4.0.0
+  - Delete global stats (deprecated since 1.9).
+
 * 3.0.4
   - Upgrade to kafka_protocol-4.1.8
 

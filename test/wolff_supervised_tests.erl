@@ -25,16 +25,11 @@ supervised_client_test() ->
   {Partition, BaseOffset} = wolff:send_sync(Producers, [Msg], 3000),
   io:format(user, "\nmessage produced to partition ~p at offset ~p\n",
             [Partition, BaseOffset]),
-  ?assertMatch(#{send_oct := O, send_cnt := C} when O > 0 andalso C > 0,
-               wolff_stats:getstat()),
-  ?assertMatch(#{send_oct := O, send_cnt := C} when O > 0 andalso C > 0,
-               wolff_stats:getstat(ClientId, <<"test-topic">>, Partition)),
   ok = wolff:stop_producers(Producers),
   ok = wolff:stop_and_delete_supervised_client(ClientId),
   ?assertEqual([], supervisor:which_children(wolff_client_sup)),
   ok = application:stop(wolff),
   ?assertEqual(undefined, whereis(wolff_sup)),
-  ?assertEqual(undefined, whereis(wolff_stats)),
   assert_last_event_is_zero(queuing, CntrEventsTable),
   assert_last_event_is_zero(inflight, CntrEventsTable),
   [1] = get_telemetry_seq(CntrEventsTable, [wolff,success]),
@@ -531,7 +526,6 @@ client_config() -> #{}.
 
 producer_config(Name) ->
   #{replayq_dir => "test-data",
-    enable_global_stats => true,
     name => Name
    }.
 
