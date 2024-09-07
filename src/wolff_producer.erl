@@ -20,7 +20,7 @@
 -define(MIN_DISCARD_LOG_INTERVAL, 5000).
 
 %% APIs
--export([start_link/5, stop/1, send/3, send_sync/3]).
+-export([start_link/5, stop/1, send/3, send/4, send_sync/3]).
 
 %% gen_server callbacks
 -export([code_change/3, handle_call/3, handle_cast/2, handle_info/2, init/1, terminate/2]).
@@ -100,7 +100,7 @@
 -define(no_caller_ack, no_caller_ack).
 -define(MAX_LINGER_BYTES, (10 bsl 20)).
 -type ack_fun() :: wolff:ack_fun().
--type send_req() :: ?SEND_REQ(pid() | reference(), [wolff:msg()], ack_fun()).
+-type send_req() :: ?SEND_REQ({pid(), reference()}, [wolff:msg()], ack_fun()).
 -type sent() :: #{req_ref := reference(),
                   q_items := [?Q_ITEM(_CallId, _Ts, _Batch)],
                   q_ack_ref := replayq:ack_ref(),
@@ -159,16 +159,22 @@ start_link(ClientId, Topic, Partition, MaybeConnPid, Config) ->
 stop(Pid) ->
   gen_server:call(Pid, stop, infinity).
 
+%% @equiv send(Pid, Batch, AckFun, wait_for_queued)
+-spec send(pid(), [wolff:msg()], wolff:ack_fun()) -> ok.
+send(Pid, Batch, AckFun) ->
+  send(Pid, Batch, AckFun, wait_for_queued).
+
 %% @doc Send a batch asynchronously.
 %% The callback function is evaluated by producer process when ack is received from kafka.
 %% In case `required_acks' is configured to `none', the callback is evaluated immediately after send.
 %% NOTE: This API has no backpressure,
 %%       high produce rate may cause execussive ram and disk usage.
+%%       Even less backpressure when the 4th arg is `no_linger'.
 %% NOTE: It's possible that two or more batches get included into one produce request.
 %%       But a batch is never split into produce requests.
 %%       Make sure it will not exceed the `max_batch_bytes' limit when sending a batch.
--spec send(pid(), [wolff:msg()], wolff:ack_fun()) -> ok.
-send(Pid, [_ | _] = Batch0, AckFun) ->
+-spec send(pid(), [wolff:msg()], wolff:ack_fun(), WaitForQueued::wait_for_queued | no_wait_for_queued) -> ok.
+send(Pid, [_ | _] = Batch0, AckFun, wait_for_queued) ->
   Caller = self(),
   Mref = erlang:monitor(process, Pid),
   Batch = ensure_ts(Batch0),
@@ -179,7 +185,11 @@ send(Pid, [_ | _] = Batch0, AckFun) ->
       ok;
     {'DOWN', Mref, _, _, Reason} ->
       erlang:error({producer_down, Reason})
-  end.
+  end;
+send(Pid, [_ | _] = Batch0, AckFun, no_wait_for_queued) ->
+  Batch = ensure_ts(Batch0),
+  erlang:send(Pid, ?SEND_REQ(?no_queued_reply, Batch, AckFun)),
+  ok.
 
 %% @doc Send a batch synchronously.
 %% Raise error exception in case produce pid is down or when timed out.
@@ -192,8 +202,7 @@ send_sync(Pid, Batch0, Timeout) ->
                _ = erlang:send(Caller, {Mref, Partition, BaseOffset}),
                ok
            end,
-  Batch = ensure_ts(Batch0),
-  erlang:send(Pid, ?SEND_REQ(?no_queued_reply, Batch, AckFun)),
+  ok = send(Pid, Batch0, AckFun, no_wait_for_queued),
   receive
     {Mref, Partition, BaseOffset} ->
       erlang:demonitor(Mref, [flush]),

@@ -627,7 +627,7 @@ test_message_too_large() ->
       Ref = make_ref(),
       Self = self(),
       AckFun = {fun ?MODULE:ack_cb/4, [Self, Ref]},
-      spawn(fun() -> wolff:send(Producers, Batch, AckFun) end),
+      {_, _} = wolff:cast(Producers, Batch, AckFun),
       fun() -> ?WAIT(5000, {ack, Ref, _Partition, BaseOffset}, BaseOffset) end
     end,
     %% Must be ok to send one message
