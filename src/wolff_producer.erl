@@ -168,7 +168,7 @@ send(Pid, Batch, AckFun) ->
 %% The callback function is evaluated by producer process when ack is received from kafka.
 %% In case `required_acks' is configured to `none', the callback is evaluated immediately after send.
 %% NOTE: This API has no backpressure,
-%%       high produce rate may cause execussive ram and disk usage.
+%%       high produce rate may cause excessive ram and disk usage.
 %%       Even less backpressure when the 4th arg is `no_linger'.
 %% NOTE: It's possible that two or more batches get included into one produce request.
 %%       But a batch is never split into produce requests.
@@ -299,9 +299,9 @@ handle_info(?linger_expire, St0) ->
   St1 = enqueue_calls(St0#{?linger_expire_timer => false}, no_linger),
   St = maybe_send_to_kafka(St1),
   {noreply, St};
-handle_info(?SEND_REQ(_, Batch, _) = Call, #{calls := Calls0} = St0) ->
+handle_info(?SEND_REQ(_, Batch, _) = Call, #{calls := Calls0, config := #{max_linger_bytes := Max}} = St0) ->
   Bytes = batch_bytes(Batch),
-  Calls = collect_send_calls(Call, Bytes, Calls0),
+  Calls = collect_send_calls(Call, Bytes, Calls0, Max),
   St1 = enqueue_calls(St0#{calls => Calls}, maybe_linger),
   St = maybe_send_to_kafka(St1),
   {noreply, St};
@@ -840,18 +840,27 @@ zz(I) -> (I bsl 1) bxor (I bsr 63).
 request_async(Conn, Req) when is_pid(Conn) ->
   ok = kpro:send(Conn, Req).
 
-collect_send_calls(Call, Bytes, empty) ->
+%% collect send calls which are already sent to mailbox,
+%% the collection is size-limited by the max_linger_bytes config.
+collect_send_calls(Call, Bytes, empty, Max) ->
   Init = #{ts => now_ts(), bytes => 0, batch_r => []},
-  collect_send_calls(Call, Bytes, Init);
-collect_send_calls(Call, Bytes, #{ts := Ts, bytes := Bytes0, batch_r := BatchR}) ->
-  collect_send_calls2(#{ts => Ts, bytes => Bytes0 + Bytes, batch_r => [Call | BatchR]}).
+  collect_send_calls(Call, Bytes, Init, Max);
+collect_send_calls(Call, Bytes, #{ts := Ts, bytes := Bytes0, batch_r := BatchR} = Calls, Max) ->
+  Sum = Bytes0 + Bytes,
+  R = Calls#{ts => Ts, bytes => Sum, batch_r => [Call | BatchR]},
+  case Sum < Max of
+    true ->
+      collect_send_calls2(R, Max);
+    false ->
+      R
+  end.
 
 %% Collect all send requests which are already in process mailbox
-collect_send_calls2(Calls) ->
+collect_send_calls2(Calls, Max) ->
   receive
     ?SEND_REQ(_, Batch, _) = Call ->
       Bytes = batch_bytes(Batch),
-      collect_send_calls(Call, Bytes, Calls)
+      collect_send_calls(Call, Bytes, Calls, Max)
   after
     0 ->
       Calls
@@ -873,12 +882,12 @@ ensure_linger_expire_timer_cancel(#{?linger_expire_timer := LTimer} = St) ->
 is_linger_continue(#{calls := Calls, config := Config}) ->
   #{max_linger_ms := MaxLingerMs, max_linger_bytes := MaxLingerBytes} = Config,
   #{ts := Ts, bytes := Bytes} = Calls,
-  TimeLeft = MaxLingerMs - (now_ts() - Ts),
-  case TimeLeft =< 0 of
+  case Bytes < MaxLingerBytes of
     true ->
-      false;
+      TimeLeft = MaxLingerMs - (now_ts() - Ts),
+      (TimeLeft > 0) andalso {true, TimeLeft};
     false ->
-      (Bytes < MaxLingerBytes) andalso {true, TimeLeft}
+      false
   end.
 
 enqueue_calls(#{calls := empty} = St, _) ->

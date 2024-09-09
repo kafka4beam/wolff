@@ -123,7 +123,7 @@ stop_and_delete_supervised_producers(Producers) ->
 %% The partition number and the per-partition worker pid are returned in a tuple to caller,
 %% so it may use them to correlate the future `AckFun' evaluation.
 %% NOTE: This API is blocked until the batch is enqueued to the producer buffer, otherwise no backpressure.
-%%       High produce rate may cause execussive ram and disk usage.
+%%       High produce rate may cause excessive ram and disk usage.
 %% NOTE: In case producers are configured with `required_acks = none',
 %%       the second arg for callback function will always be `?UNKNOWN_OFFSET' (`-1').
 -spec send(producers(), [msg()], ack_fun()) -> {partition(), pid()}.
