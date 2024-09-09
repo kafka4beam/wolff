@@ -28,8 +28,16 @@ dynamic_topics_test() ->
   T1 = <<"test-topic">>,
   T2 = <<"test-topic-2">>,
   T3 = <<"test-topic-3">>,
-  ?assertMatch({0, Pid} when is_pid(Pid), wolff:send2(Producers, T1, [Msg], AckFun)),
-  receive acked -> ok end,
+  N = 100,
+  %% send N messages
+  lists:foreach(fun(_I) ->
+    ?assertMatch({0, Pid} when is_pid(Pid), wolff:send2(Producers, T1, [Msg], AckFun))
+  end, lists:seq(1, N)),
+  %% wait for N acks
+  lists:foreach(fun(_I) ->
+    receive acked -> ok end
+  end, lists:seq(1, N)),
+  ok = assert_producers_state(Producers, [T1, T2, T3]),
   ?assertMatch({0, Offset} when is_integer(Offset), send(Producers, T2, Msg)),
   ?assertMatch({0, Offset} when is_integer(Offset), cast(Producers, T3, Msg)),
   ?assertMatch(#{metadata_ts := #{T1 := _, T2 := _, T3 := _},
@@ -49,6 +57,69 @@ dynamic_topics_test() ->
   ?assertEqual([], ets:tab2list(?WOLFF_PRODUCERS_GLOBAL_TABLE)),
   ok = wolff:stop_and_delete_supervised_client(ClientId),
   ok = application:stop(wolff),
+  ok.
+
+ack_cb_interlave_test() ->
+  _ = application:stop(wolff), %% ensure stopped
+  {ok, _} = application:ensure_all_started(wolff),
+  ClientId = <<"ack_cb_interleave_tes">>,
+  ClientCfg = client_config(),
+  {ok, _ClientPid} = wolff:ensure_supervised_client(ClientId, ?HOSTS, ClientCfg),
+  Group = atom_to_binary(?FUNCTION_NAME),
+  ProducerCfg = #{required_acks => all_isr,
+                  group => Group,
+                  partitioner => 0
+                 },
+  {ok, Producers} = start(ClientId, ProducerCfg),
+  ?assertEqual({ok, Producers}, start(ClientId, ProducerCfg)),
+  Children = supervisor:which_children(wolff_producers_sup),
+  ?assertMatch([_], Children),
+  %% We can send from each producer.
+  Msg = #{key => ?KEY, value => <<"value">>},
+  Self = self(),
+  AckFun1 = fun(_Partition, _BaseOffset) -> Self ! acked1, ok end,
+  AckFun2 = fun(_Partition, _BaseOffset) -> Self ! acked2, ok end,
+  T1 = <<"test-topic">>,
+  N = 10,
+  {0, Pid} = wolff:send2(Producers, T1, [Msg], AckFun1),
+  {0, Pid} = wolff:send2(Producers, T1, [Msg], AckFun2),
+  receive acked1 -> ok end,
+  receive acked2 -> ok end,
+  %% suspend the connection, to make sure the acks will be pending
+  #{conn := Conn} = sys:get_state(Pid),
+  sys:suspend(Conn),
+  %% send N messages
+  lists:foreach(fun(_I) ->
+    ?assertMatch({0, Pid} when is_pid(Pid), wolff:cast2(Producers, T1, [Msg], AckFun1)),
+    ?assertMatch({0, Pid} when is_pid(Pid), wolff:cast2(Producers, T1, [Msg], AckFun2))
+  end, lists:seq(1, N)),
+  %% inspect the pending acks
+  #{conn := Conn, pending_acks := Acks} = sys:get_state(Pid),
+  ?assertEqual(N * 2, wolff_pendack:count(Acks)),
+  #{cbs := Cbs} = Acks,
+  ?assertEqual(N * 2, queue:len(Cbs)),
+  %% resume the connection
+  sys:resume(Conn),
+  %% wait for 2*N acks
+  lists:foreach(fun(_I) -> receive acked1 -> ok end end, lists:seq(1, N)),
+  lists:foreach(fun(_I) -> receive acked2 -> ok end end, lists:seq(1, N)),
+  ok = assert_producers_state(Producers, [T1]),
+  ok = wolff:stop_and_delete_supervised_producers(Producers),
+  ok = wolff:stop_and_delete_supervised_client(ClientId),
+  ok = application:stop(wolff),
+  ok.
+
+assert_producers_state(_Producers, []) ->
+  ok;
+assert_producers_state(Producers, [Topic | Topics]) ->
+  ok = assert_producer_state(Producers, Topic),
+  assert_producers_state(Producers, Topics).
+
+assert_producer_state(Producers, Topic) ->
+  {0, Pid} = wolff_producers:pick_producer2(Producers, Topic, [#{value => <<"a">>}]),
+  #{pending_acks := Acks, sent_reqs := SentReqs} = sys:get_state(Pid),
+  ?assertEqual(0, wolff_pendack:count(Acks)),
+  ?assertEqual(0, queue:len(SentReqs)),
   ok.
 
 send(Producers, Topic, Message) ->

@@ -472,6 +472,53 @@ mem_only_replayq_test() ->
   ets:delete(CntrEventsTable),
   deinstall_event_logging(?FUNCTION_NAME).
 
+recover_from_replayq_test() ->
+  ClientCfg = client_config(),
+  {ok, Client} = start_client(<<"client-2">>, ?HOSTS, ClientCfg),
+  ProducerCfg = #{replayq_dir => "test-data-2"},
+  {ok, Producers} = wolff:start_producers(Client, <<"test-topic">>, ProducerCfg),
+  Msg = #{key => ?KEY, value => <<"value">>},
+  {0, BaseOffset} = wolff:send_sync(Producers, [Msg], 3000),
+  ProducerPid = wolff_producers:lookup_producer(Producers, 0),
+  #{conn := Conn} = sys:get_state(ProducerPid),
+  %% suspend the connection process so to make sure the messages will remain in the replayq
+  sys:suspend(Conn),
+  %% do not expect any ack.
+  AckFun = fun(_Partition, _BaseOffset) -> error(unexpected) end,
+  N = 10,
+  L = lists:seq(1, 10),
+  lists:foreach(fun(_) -> wolff:cast(Producers, [Msg], AckFun) end, L),
+  %% ensure the messages are in replayq
+  ProducerPid ! linger_expire,
+  #{pending_acks := Acks} = sys:get_state(ProducerPid),
+  ?assertEqual(N, wolff_pendack:count(Acks)),
+  %% kill the processes
+  unlink(ProducerPid),
+  ok = wolff_producer:stop(ProducerPid),
+  exit(Conn, kill),
+  %% restart the producers
+  {ok, Producers1} = wolff:start_producers(Client, <<"test-topic">>, ProducerCfg),
+  ProducerPid1 = wolff_producers:lookup_producer(Producers1, 0),
+  retry(fun() ->
+    #{pending_acks := Acks1, replayq := Q} = sys:get_state(ProducerPid1),
+    ?assertEqual(0, wolff_pendack:count(Acks1)),
+    ?assertEqual(0, replayq:count(Q))
+  end, 3000),
+  {0, BaseOffset1} = wolff:send_sync(Producers1, [Msg], 2000),
+  ?assertEqual(BaseOffset + N + 1, BaseOffset1),
+  ok = wolff:stop_producers(Producers1),
+  ok = stop_client(Client).
+
+retry(_F, T) when T < 0 ->
+   error(retry_failed);
+retry(F, T) ->
+  try
+    F()
+  catch _:_ ->
+    timer:sleep(100),
+    retry(F, T - 100)
+  end.
+
 replayq_offload_test() ->
   CntrEventsTable = ets:new(cntr_events, [public]),
   install_event_logging(?FUNCTION_NAME, CntrEventsTable, false),
