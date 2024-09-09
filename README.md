@@ -161,6 +161,8 @@ wolff:send(Producers, [Msg], AckFun).
 * `max_linger_ms`: Age in milliseconds a batch can stay in queue when the connection
    is idle (as in no pending acks from kafka). Default=0 (as in send immediately).
 
+* `max_linger_bytes`: Number of bytes to collect before sending it to Kafka. If set to 0, `max_batch_bytes` is taken for mem-only mode, otherwise it's 10 times `max_batch_bytes` (but never exceeds 10MB) to optimize disk write.
+
 * `max_send_ahead`: Number of batches to be sent ahead without receiving ack for
    the last request. Must be 0 if messages must be delivered in strict order.
 

@@ -1,6 +1,6 @@
 {application, wolff,
  [{description, "Kafka's publisher"},
-  {vsn, "4.0.0"},
+  {vsn, "git"},
   {registered, []},
   {applications,
    [kernel,

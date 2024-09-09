@@ -34,11 +34,13 @@
 
 %% Messaging APIs
 -export([send/3,
-         send_sync/3
+         send_sync/3,
+         cast/3
         ]).
 
 %% Messaging APIs of dynamic producer.
 -export([send2/4,
+         cast2/4,
          send_sync2/4,
          add_topic/2,
          remove_topic/2
@@ -120,8 +122,8 @@ stop_and_delete_supervised_producers(Producers) ->
 %% In case `required_acks' is configured to `none', the callback is evaluated immediately after send.
 %% The partition number and the per-partition worker pid are returned in a tuple to caller,
 %% so it may use them to correlate the future `AckFun' evaluation.
-%% NOTE: This API has no backpressure,
-%%       high produce rate may cause execussive ram and disk usage.
+%% NOTE: This API is blocked until the batch is enqueued to the producer buffer, otherwise no backpressure.
+%%       High produce rate may cause excessive ram and disk usage.
 %% NOTE: In case producers are configured with `required_acks = none',
 %%       the second arg for callback function will always be `?UNKNOWN_OFFSET' (`-1').
 -spec send(producers(), [msg()], ack_fun()) -> {partition(), pid()}.
@@ -135,6 +137,22 @@ send(Producers, Batch, AckFun) ->
 send2(Producers, Topic, Batch, AckFun) ->
   {Partition, ProducerPid} = wolff_producers:pick_producer2(Producers, Topic, Batch),
   ok = wolff_producer:send(ProducerPid, Batch, AckFun),
+  {Partition, ProducerPid}.
+
+%% @doc Cast a batch to a partition producer.
+%% Even less backpressure than `send/3'.
+%% It does not wait for the batch to be enqueued to the producer buffer.
+-spec cast(producers(), [msg()], ack_fun()) -> {partition(), pid()}.
+cast(Producers, Batch, AckFun) ->
+  {Partition, ProducerPid} = wolff_producers:pick_producer(Producers, Batch),
+  ok = wolff_producer:send(ProducerPid, Batch, AckFun, no_wait_for_queued),
+  {Partition, ProducerPid}.
+
+%% @doc Topic as argument for dynamic producers, otherwise equivalent to `cast/3'.
+-spec cast2(producers(), topic(), [msg()], ack_fun()) -> {partition(), pid()}.
+cast2(Producers, Topic, Batch, AckFun) ->
+  {Partition, ProducerPid} = wolff_producers:pick_producer2(Producers, Topic, Batch),
+  ok = wolff_producer:send(ProducerPid, Batch, AckFun, no_wait_for_queued),
   {Partition, ProducerPid}.
 
 %% @doc Pick a partition producer and send a batch synchronously.

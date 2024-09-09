@@ -2,7 +2,6 @@
 
 -include("wolff.hrl").
 -include_lib("eunit/include/eunit.hrl").
--include_lib("kafka_protocol/include/kpro.hrl").
 
 -define(KEY, key(?FUNCTION_NAME)).
 -define(HOSTS, [{"localhost", 9092}]).
@@ -31,8 +30,8 @@ dynamic_topics_test() ->
   T3 = <<"test-topic-3">>,
   ?assertMatch({0, Pid} when is_pid(Pid), wolff:send2(Producers, T1, [Msg], AckFun)),
   receive acked -> ok end,
-  ?assertMatch({0, Offset} when is_integer(Offset), wolff:send_sync2(Producers, T2, [Msg], 10_000)),
-  ?assertMatch({0, Offset} when is_integer(Offset), wolff:send_sync2(Producers, T3, [Msg], 10_000)),
+  ?assertMatch({0, Offset} when is_integer(Offset), send(Producers, T2, Msg)),
+  ?assertMatch({0, Offset} when is_integer(Offset), cast(Producers, T3, Msg)),
   ?assertMatch(#{metadata_ts := #{T1 := _, T2 := _, T3 := _},
                  known_topics := #{T1 := _, T2 := _, T3 := _},
                  conns := #{{T1, 0} := _, {T2, 0} := _, {T3, 0} := _}
@@ -51,6 +50,23 @@ dynamic_topics_test() ->
   ok = wolff:stop_and_delete_supervised_client(ClientId),
   ok = application:stop(wolff),
   ok.
+
+send(Producers, Topic, Message) ->
+  wolff:send_sync2(Producers, Topic, [Message], 10_000).
+
+cast(Producers, Topic, Message) ->
+  Self = self(),
+  Ref = make_ref(),
+  AckFun = fun(Partition, BaseOffset) ->
+    Self ! {Ref, Partition, BaseOffset},
+    ok
+  end,
+  {_, _} = wolff:cast2(Producers, Topic, [Message], AckFun),
+  receive
+    {Ref, Partition, BaseOffset} -> {Partition, BaseOffset}
+  after 10_000 ->
+    error(timeout)
+  end.
 
 unknown_topic_expire_test() ->
   _ = application:stop(wolff), %% ensure stopped
