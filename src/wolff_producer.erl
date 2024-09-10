@@ -20,7 +20,7 @@
 -define(MIN_DISCARD_LOG_INTERVAL, 5000).
 
 %% APIs
--export([start_link/5, stop/1, send/3, send/4, send_sync/3]).
+-export([start_link/5, stop/1, send/3, send/4, send_sync/3, ack_cb/4]).
 
 %% gen_server callbacks
 -export([code_change/3, handle_call/3, handle_cast/2, handle_info/2, init/1, terminate/2]).
@@ -198,10 +198,7 @@ send_sync(Pid, Batch0, Timeout) ->
   Caller = caller(),
   Mref = erlang:monitor(process, Pid),
   %% synced local usage, safe to use anonymous fun
-  AckFun = fun(Partition, BaseOffset) ->
-               _ = erlang:send(Caller, {Mref, Partition, BaseOffset}),
-               ok
-           end,
+  AckFun = {fun ?MODULE:ack_cb/4, [Caller, Mref]},
   ok = send(Pid, Batch0, AckFun, no_wait_for_queued),
   receive
     {Mref, Partition, BaseOffset} ->
@@ -221,6 +218,11 @@ send_sync(Pid, Batch0, Timeout) ->
           erlang:error(timeout)
       end
   end.
+
+%% @hidden Callbak exported for send_sync/3.
+ack_cb(Partition, BaseOffset, Caller, Mref) ->
+  _ = erlang:send(Caller, {Mref, Partition, BaseOffset}),
+  ok.
 
 init(St) ->
   erlang:process_flag(trap_exit, true),
