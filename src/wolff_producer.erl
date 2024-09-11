@@ -1,4 +1,4 @@
-%% Copyright (c) 2018-2020 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2018-2024 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@
 -define(MIN_DISCARD_LOG_INTERVAL, 5000).
 
 %% APIs
--export([start_link/5, stop/1, send/3, send/4, send_sync/3]).
+-export([start_link/5, stop/1, send/3, send/4, send_sync/3, ack_cb/4]).
 
 %% gen_server callbacks
 -export([code_change/3, handle_call/3, handle_cast/2, handle_info/2, init/1, terminate/2]).
@@ -97,7 +97,6 @@
 -define(no_queued_reply, no_queued_reply).
 -define(ACK_CB(AckCb, Partition), {AckCb, Partition}).
 -define(no_queue_ack, no_queue_ack).
--define(no_caller_ack, no_caller_ack).
 -define(MAX_LINGER_BYTES, (10 bsl 20)).
 -type ack_fun() :: wolff:ack_fun().
 -type send_req() :: ?SEND_REQ({pid(), reference()}, [wolff:msg()], ack_fun()).
@@ -107,13 +106,12 @@
                   attempts := pos_integer()
                  }.
 
--type state() :: #{ call_id_base := pos_integer()
-                  , client_id := wolff:client_id()
+-type state() :: #{ client_id := wolff:client_id()
                   , config := config_state()
                   , conn := undefined | _
                   , ?linger_expire_timer := false | reference()
                   , partition := partition()
-                  , pending_acks := #{} % CallId => AckCb
+                  , pending_acks := wolff_pendack:acks()
                   , produce_api_vsn := undefined | _
                   , replayq := replayq:q()
                   , sent_reqs := queue:queue(sent())
@@ -198,10 +196,7 @@ send_sync(Pid, Batch0, Timeout) ->
   Caller = caller(),
   Mref = erlang:monitor(process, Pid),
   %% synced local usage, safe to use anonymous fun
-  AckFun = fun(Partition, BaseOffset) ->
-               _ = erlang:send(Caller, {Mref, Partition, BaseOffset}),
-               ok
-           end,
+  AckFun = {fun ?MODULE:ack_cb/4, [Caller, Mref]},
   ok = send(Pid, Batch0, AckFun, no_wait_for_queued),
   receive
     {Mref, Partition, BaseOffset} ->
@@ -221,6 +216,11 @@ send_sync(Pid, Batch0, Timeout) ->
           erlang:error(timeout)
       end
   end.
+
+%% @hidden Callbak exported for send_sync/3.
+ack_cb(Partition, BaseOffset, Caller, Mref) ->
+  _ = erlang:send(Caller, {Mref, Partition, BaseOffset}),
+  ok.
 
 init(St) ->
   erlang:process_flag(trap_exit, true),
@@ -275,8 +275,7 @@ do_init(#{client_id := ClientId,
   wolff_metrics:inflight_set(Config, 0),
   St#{replayq => Q,
       config := Config,
-      call_id_base => erlang:system_time(microsecond),
-      pending_acks => #{}, % CallId => AckCb
+      pending_acks => wolff_pendack:new(),
       produce_api_vsn => undefined,
       sent_reqs => queue:new(), % {kpro:req(), replayq:ack_ref(), [{CallId, MsgCount}]}
       sent_reqs_count => 0,
@@ -385,9 +384,6 @@ ensure_ts(Batch) ->
   lists:map(fun(#{ts := _} = Msg) -> Msg;
                (Msg) -> Msg#{ts => now_ts()}
             end, Batch).
-
-make_call_id(Base) ->
-  Base + erlang:unique_integer([positive]).
 
 resolve_max_linger_bytes(#{max_linger_bytes := 0,
                            max_batch_bytes := Mb
@@ -566,12 +562,7 @@ get_batch_from_queue_items([], Acc) ->
 get_batch_from_queue_items([?Q_ITEM(_CallId, _Ts, Batch) | Items], Acc) ->
   get_batch_from_queue_items(Items, lists:reverse(Batch, Acc)).
 
-count_calls([]) ->
-  0;
-count_calls([?Q_ITEM(?no_caller_ack, _Ts, _Batch) | Rest]) ->
-  count_calls(Rest);
-count_calls([?Q_ITEM(_CallId, _Ts, _Batch) | Rest]) ->
-  1 + count_calls(Rest).
+count_calls(Items) -> length(Items).
 
 count_msgs([]) ->
   0;
@@ -759,16 +750,14 @@ ensure_delayed_reconnect(St, _Delay) ->
   St.
 
 evaluate_pending_ack_funs(PendingAcks, [], _BaseOffset) -> PendingAcks;
-evaluate_pending_ack_funs(PendingAcks, [{?no_caller_ack, BatchSize} | Rest], BaseOffset) ->
-  evaluate_pending_ack_funs(PendingAcks, Rest, offset(BaseOffset, BatchSize));
 evaluate_pending_ack_funs(PendingAcks, [{CallId, BatchSize} | Rest], BaseOffset) ->
   NewPendingAcks =
-    case maps:get(CallId, PendingAcks, false) of
-      false ->
-        PendingAcks;
-      AckCb ->
+    case wolff_pendack:take(PendingAcks, CallId) of
+      {ok, AckCb, PendingAcks1} ->
         ok = eval_ack_cb(AckCb, BaseOffset),
-        maps:without([CallId], PendingAcks)
+        PendingAcks1;
+      false ->
+        PendingAcks
     end,
   evaluate_pending_ack_funs(NewPendingAcks, Rest, offset(BaseOffset, BatchSize)).
 
@@ -908,18 +897,16 @@ enqueue_calls(#{calls := #{batch_r := CallsR}} = St0, no_linger) ->
 enqueue_calls2(Calls,
                #{replayq := Q,
                  pending_acks := PendingAcks0,
-                 call_id_base := CallIdBase,
                  partition := Partition,
                  config := Config0
                 } = St0) ->
   {QueueItems, PendingAcks, CallByteSize} =
     lists:foldl(
       fun(?SEND_REQ(_From, Batch, AckFun), {Items, PendingAcksIn, Size}) ->
-          CallId = make_call_id(CallIdBase),
           %% keep callback funs in memory, do not seralize it into queue because
           %% saving anonymous function to disk may easily lead to badfun exception
           %% in case of restart on newer version beam.
-          PendingAcksOut = PendingAcksIn#{CallId => ?ACK_CB(AckFun, Partition)},
+          {CallId, PendingAcksOut} = wolff_pendack:insert(PendingAcksIn, ?ACK_CB(AckFun, Partition)),
           NewItems = [make_queue_item(CallId, Batch) | Items],
           {NewItems, PendingAcksOut, Size + batch_bytes(Batch)}
       end, {[], PendingAcks0, 0}, Calls),

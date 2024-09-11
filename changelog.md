@@ -3,6 +3,7 @@
   - Move linger delay to front of the buffer queue.
     The default value for `max_linger_ms` is `0` as before.
     Setting `max_linger_ms=10` will make the disk write batch larger when buffer is configured to disk mode or disk-offload mode.
+  - Lower RAM usage with compact `pending_acks` data structure when the callbacks are static.
 
 * 3.0.4
   - Upgrade to kafka_protocol-4.1.8
