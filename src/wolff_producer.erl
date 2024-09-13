@@ -99,8 +99,8 @@
 -define(no_queue_ack, no_queue_ack).
 -define(MAX_LINGER_BYTES, (10 bsl 20)).
 -define(EMPTY, empty).
--define(SYNC_REFS(Caller, Ref), {Caller, Ref}).
--define(IS_SYNC_REFS(Caller, Ref), ((is_reference(Caller) orelse is_pid(Caller)) andalso is_reference(Ref))).
+-define(SYNC_REF(Caller, Ref), {Caller, Ref}).
+-define(IS_SYNC_REF(Caller, Ref), ((is_reference(Caller) orelse is_pid(Caller)) andalso is_reference(Ref))).
 
 -type ack_fun() :: wolff:ack_fun().
 -type send_req() :: ?SEND_REQ({pid(), reference()}, [wolff:msg()], ack_fun()).
@@ -203,8 +203,7 @@ send(Pid, [_ | _] = Batch0, AckFun, no_wait_for_queued) ->
 send_sync(Pid, Batch0, Timeout) ->
   Caller = caller(),
   Mref = erlang:monitor(process, Pid),
-  %% synced local usage, safe to use anonymous fun
-  Ack = ?SYNC_REFS(Caller, Mref),
+  Ack = ?SYNC_REF(Caller, Mref),
   ok = send(Pid, Batch0, Ack, no_wait_for_queued),
   receive
     {Mref, Partition, BaseOffset} ->
@@ -944,7 +943,7 @@ eval_ack_cb(?ACK_CB(AckFun, Partition), BaseOffset) when is_function(AckFun, 2) 
 eval_ack_cb(?ACK_CB({F, A}, Partition), BaseOffset) when is_function(F) ->
   true = is_function(F, length(A) + 2),
   ok = erlang:apply(F, [Partition, BaseOffset | A]);
-eval_ack_cb(?ACK_CB({Caller, Ref}, Partition), BaseOffset) when ?IS_SYNC_REFS(Caller, Ref) ->
+eval_ack_cb(?ACK_CB({Caller, Ref}, Partition), BaseOffset) when ?IS_SYNC_REF(Caller, Ref) ->
   _ = erlang:send(Caller, {Ref, Partition, BaseOffset}),
   ok.
 
