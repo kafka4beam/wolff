@@ -1,3 +1,7 @@
+* 4.0.1
+  - Minimize callback context for sync call.
+  - Upgrade to kafka_protocl-4.1.9 for OTP 27.
+
 * 4.0.0
   - Delete global stats (deprecated since 1.9).
   - Move linger delay to front of the buffer queue.
