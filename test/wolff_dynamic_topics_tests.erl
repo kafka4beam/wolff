@@ -227,6 +227,42 @@ topic_add_remove_test() ->
   ok = application:stop(wolff),
   ok.
 
+faile_to_fetch_initial_metadata_test() ->
+  _ = application:stop(wolff), %% ensure stopped
+  {ok, _} = application:ensure_all_started(wolff),
+  ClientId = <<"dynamic-topics">>,
+  ClientCfg = client_config(),
+  {ok, _ClientPid} = wolff:ensure_supervised_client(ClientId, ?HOSTS, ClientCfg),
+  Group = atom_to_binary(?FUNCTION_NAME),
+  ProducerCfg = #{required_acks => all_isr,
+                  group => Group,
+                  partitioner => 0
+                 },
+  ok = meck:new(wolff_client, [non_strict, no_history, no_link, passthrough]),
+  %% inject an error
+  meck:expect(wolff_client, get_leader_connections,
+              fun(_ClientId, _Group, _Topic, _MaxPartitions) ->
+                      {error, ?FUNCTION_NAME}
+              end),
+  {ok, Producers} = start(ClientId, ProducerCfg),
+  Msg = #{key => ?KEY, value => <<"value">>},
+  AckFun = fun(_Partition, _BaseOffset) -> ok end,
+  ?assertThrow(#{error := ?FUNCTION_NAME}, wolff:send2(Producers, <<"test-topic">>, [Msg], AckFun)),
+  %% remove the error
+  meck:expect(wolff_client, get_leader_connections,
+              fun(ClientId1, Group1, Topic1, MaxPartitions1) ->
+                      meck:passthrough([ClientId1, Group1, Topic1, MaxPartitions1])
+              end),
+  %% trigger an immediate re-init
+  [{_, ProducersPid, _, _}] = supervisor:which_children(wolff_producers_sup),
+  ProducersPid ! init_producers,
+  ?assertMatch({Partition, Pid} when is_integer(Partition) andalso is_pid(Pid),
+               wolff:send2(Producers, <<"test-topic">>, [Msg], AckFun)),
+  ok = wolff:stop_and_delete_supervised_client(ClientId),
+  ok = application:stop(wolff),
+  meck:unload(wolff_client),
+  ok.
+
 %% helpers
 
 client_config() -> #{}.

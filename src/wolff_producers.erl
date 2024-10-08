@@ -493,8 +493,8 @@ do_add_topic(#{my_id := ?NS_TOPIC(Group, ?DYNAMIC),
       discard ->
         ok = mark_topic_unknown(Group, Topic),
         {#{}, {error, unknown_topic_or_partition}};
-      {error, ?not_initialized(_, Reason) = TopicStatus1} ->
-        {TopicStatus1, {error, Reason}}
+      {error, ?not_initialized(_, Reason) = Error} ->
+        {#{Topic => Error}, {error, Reason}}
     end,
   {St#{producers_status := maps:merge(Status, TopicStatus)}, Reply}.
 
