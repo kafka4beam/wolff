@@ -534,7 +534,8 @@ is_send_ahead_allowed(#{config := #{max_send_ahead := Max},
 is_idle(#{replayq := Q, sent_reqs_count := SentReqsCount}) ->
   SentReqsCount =:= 0 andalso replayq:count(Q) =:= 0.
 
-now_ts() ->erlang:system_time(millisecond).
+now_ts() ->
+    erlang:system_time(millisecond).
 
 make_queue_item(CallId, Batch) ->
   ?Q_ITEM(CallId, now_ts(), Batch).
@@ -838,10 +839,9 @@ collect_send_calls(Call, Bytes, ?EMPTY, Max) ->
   Init = #{ts => now_ts(), bytes => 0, batch_r => []},
   collect_send_calls(Call, Bytes, Init, Max);
 collect_send_calls(Call, Bytes, Calls, Max) ->
-  #{ts := Ts, bytes := Bytes0, batch_r := BatchR} = Calls,
+  #{bytes := Bytes0, batch_r := BatchR} = Calls,
   Sum = Bytes0 + Bytes,
-  R = Calls#{ts => Ts,
-             bytes => Sum,
+  R = Calls#{bytes => Sum,
              batch_r => [Call | BatchR]
             },
   case Sum < Max of
@@ -981,7 +981,7 @@ maybe_log_discard(St, Increment) ->
 maybe_log_discard(#{topic := Topic, partition := Partition},
                   Increment,
                   #{last_ts := LastTs, last_cnt := LastCnt, acc_cnt := AccCnt}) ->
-  NowTs = erlang:system_time(millisecond),
+  NowTs = now_ts(),
   NewAccCnt = AccCnt + Increment,
   DiffCnt = NewAccCnt - LastCnt,
   case NowTs - LastTs > ?MIN_DISCARD_LOG_INTERVAL of
@@ -1080,7 +1080,7 @@ maybe_log_discard_test_() ->
     [ {"no-increment", fun() -> maybe_log_discard(undefined, 0) end}
     , {"fake-last-old",
        fun() ->
-         Ts0 = erlang:system_time(millisecond) - ?MIN_DISCARD_LOG_INTERVAL - 1,
+         Ts0 = now_ts() - ?MIN_DISCARD_LOG_INTERVAL - 1,
          ok = put_overflow_log_state(Ts0, 2, 2),
          ok = maybe_log_discard(#{topic => <<"a">>, partition => 0}, 1),
          St = get_overflow_log_state(),
@@ -1089,7 +1089,7 @@ maybe_log_discard_test_() ->
        end}
     , {"fake-last-fresh",
        fun() ->
-         Ts0 = erlang:system_time(millisecond),
+         Ts0 = now_ts(),
          ok = put_overflow_log_state(Ts0, 2, 2),
          ok = maybe_log_discard(#{topic => <<"a">>, partition => 0}, 2),
          St = get_overflow_log_state(),
