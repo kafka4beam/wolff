@@ -1,3 +1,6 @@
+* 4.0.2
+  - Fix dynamic topic producer initialization failure handling.
+
 * 4.0.1
   - Minimize callback context for sync call.
   - Upgrade to kafka_protocl-4.1.9 for OTP 27.
