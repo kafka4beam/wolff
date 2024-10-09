@@ -133,7 +133,7 @@ drop1(#{backlog := Cbs0, count := Count} = X, [Id | Ids], Acc) ->
         false ->
             drop1(X, Ids, Acc);
         {ok, Cb, Cbs}  ->
-            drop1(X#{backlog => Cbs, count => Count - 1}, Ids, [Cb | Acc])
+            drop1(X#{backlog := Cbs, count := Count - 1}, Ids, [Cb | Acc])
     end.
 
 %% @doc Move a list of calls from the head of the backlog queue
@@ -150,5 +150,5 @@ move1(#{backlog := Backlog0, inflight := Inflight0} = X, Id) ->
             X;
         {ok, Cb, Backlog} ->
             Inflight = insert_cb(Inflight0, Id, Cb),
-           X#{backlog => Backlog, inflight => Inflight}
+           X#{backlog := Backlog, inflight := Inflight}
     end.

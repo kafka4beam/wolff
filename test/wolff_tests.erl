@@ -331,7 +331,7 @@ replayq_overflow_while_inflight_test() ->
   Pid = wolff_producers:lookup_producer(Producers, 0),
   ?assert(is_process_alive(Pid)),
   TesterPid = self(),
-  ok = meck:new(kpro, [non_strict, no_history, no_link, passthrough]),
+  ok = meck:new(kpro, [no_history, no_link, passthrough]),
   meck:expect(kpro, send,
               fun(_Conn, Req) ->
                       Payload = iolist_to_binary(lists:last(tuple_to_list(Req))),
