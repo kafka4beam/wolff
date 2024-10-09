@@ -96,8 +96,8 @@ ack_cb_interlave_test() ->
   %% inspect the pending acks
   #{conn := Conn, pending_acks := Acks} = sys:get_state(Pid),
   ?assertEqual(N * 2, wolff_pendack:count(Acks)),
-  #{cbs := Cbs} = Acks,
-  ?assertEqual(N * 2, queue:len(Cbs)),
+  #{inflight := Inflight, backlog := Backlog} = Acks,
+  ?assertEqual(N * 2, queue:len(Backlog) + queue:len(Inflight)),
   %% resume the connection
   sys:resume(Conn),
   %% wait for 2*N acks

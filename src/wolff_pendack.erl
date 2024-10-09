@@ -21,7 +21,8 @@
 %% time in microseconds.
 -module(wolff_pendack).
 
--export([new/0, count/1, insert/2, take/2]).
+-export([new/0, count/1, insert_backlog/2]).
+-export([take_inflight/2, drop_backlog/2, move_backlog_to_inflight/2]).
 
 -export_type([acks/0]).
 
@@ -29,7 +30,10 @@
 -type key() :: call_id() | {call_id(), call_id()}.
 -type cb() :: term().
 -opaque acks() :: #{next_id := integer(),
-                    cbs := queue:queue({key(), cb()})}.
+                    backlog := queue:queue({key(), cb()}),
+                    inflight := queue:queue({key(), cb()}),
+                    count := non_neg_integer()
+                   }.
 
 %% @doc Initialize a new data structure.
 new() ->
@@ -38,26 +42,21 @@ new() ->
     %% the process crashed or node restarted.
     Now = erlang:system_time(microsecond),
     #{next_id => Now,
-      cbs => queue:new()
+      backlog => queue:new(),
+      inflight => queue:new(),
+      count => 0
      }.
 
 %% @doc count the total number of pending acks.
 -spec count(acks()) -> non_neg_integer().
-count(#{cbs := Cbs}) ->
-    sum(queue:to_list(Cbs), 0).
+count(#{count := Count}) ->
+    Count.
 
-sum([], Acc) ->
-    Acc;
-sum([{CallId, _} | Rest], Acc) when is_integer(CallId) ->
-    sum(Rest, Acc + 1);
-sum([{{MinCallId, MaxCallId}, _} | Rest], Acc) ->
-    sum(Rest, Acc + MaxCallId - MinCallId + 1).
-
-%% @doc insert a callback into the data structure.
--spec insert(acks(), cb()) -> {call_id(), acks()}.
-insert(#{next_id := Id, cbs := Cbs} = X, Cb) ->
+%% @doc insert a callback into the backlog queue.
+-spec insert_backlog(acks(), cb()) -> {call_id(), acks()}.
+insert_backlog(#{next_id := Id, backlog := Cbs, count := Count} = X, Cb) ->
     NewCbs = insert_cb(Cbs, Id, Cb),
-    {Id, X#{next_id => Id + 1, cbs => NewCbs}}.
+    {Id, X#{next_id => Id + 1, backlog => NewCbs, count => Count + 1}}.
 
 insert_cb(Cbs, Id, Cb) ->
     case queue:out_r(Cbs) of
@@ -84,17 +83,17 @@ expand_id({MinId, MaxId}, Id) ->
     Id =:= MaxId + 1 orelse error({unexpected_id, {MinId, MaxId}, Id}),
     {MinId, Id}.
 
-%% @doc Take the callback for a given call ID.
-%% The ID is expected to be the oldest in the queue.
+%% @doc Take the callback from the inflight queue.
+%% The ID is expected to be the oldest in the inflight queue.
 %% Return the callback and the updated data structure.
--spec take(acks(), call_id()) -> {ok, cb(), acks()} | false.
-take(#{cbs := Cbs} = X, Id) ->
+-spec take_inflight(acks(), call_id()) -> {ok, cb(), acks()} | false.
+take_inflight(#{inflight := Cbs, count := Count} = X, Id) ->
     case take1(Cbs, Id) of
         false ->
             %% stale ack
             false;
         {ok, Cb, Cbs1} ->
-            {ok, Cb, X#{cbs => Cbs1}}
+            {ok, Cb, X#{inflight => Cbs1, count => Count - 1}}
     end.
 
 take1(Cbs0, Id) ->
@@ -120,3 +119,36 @@ take2(Cbs, {MinId, MaxId}, Cb, Id) when Id =:= MinId ->
     end;
 take2(_Cbs, {MinId, MaxId}, _Cb, Id) ->
     error(#{cause => unexpected_id, min => MinId, max => MaxId, got => Id}).
+
+%% @doc Drop calls from the head (older end) of the backlog queue.
+%% Return list of callbacks and the remaining.
+-spec drop_backlog(acks(), [call_id()]) -> {[cb()], acks()}.
+drop_backlog(X, Ids) ->
+    drop1(X, Ids, []).
+
+drop1(X, [], Acc) ->
+    {lists:reverse(Acc), X};
+drop1(#{backlog := Cbs0, count := Count} = X, [Id | Ids], Acc) ->
+    case take1(Cbs0, Id) of
+        false ->
+            drop1(X, Ids, Acc);
+        {ok, Cb, Cbs}  ->
+            drop1(X#{backlog => Cbs, count => Count - 1}, Ids, [Cb | Acc])
+    end.
+
+%% @doc Move a list of calls from the head of the backlog queue
+%% and push it to the inflight queue.
+-spec move_backlog_to_inflight(acks(), [call_id()]) -> acks().
+move_backlog_to_inflight(X, []) ->
+    X;
+move_backlog_to_inflight(X, [Id | Ids]) ->
+    move_backlog_to_inflight(move1(X, Id), Ids).
+
+move1(#{backlog := Backlog0, inflight := Inflight0} = X, Id) ->
+    case take1(Backlog0, Id) of
+        false ->
+            X;
+        {ok, Cb, Backlog} ->
+            Inflight = insert_cb(Inflight0, Id, Cb),
+           X#{backlog => Backlog, inflight => Inflight}
+    end.

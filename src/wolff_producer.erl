@@ -497,10 +497,13 @@ send_to_kafka(#{sent_reqs := SentReqs,
                 inflight_calls := InflightCalls,
                 replayq := Q,
                 config := #{max_batch_bytes := BytesLimit} = Config,
-                conn := Conn
+                conn := Conn,
+                pending_acks := PendingAcks
                } = St0) ->
   {NewQ, QAckRef, Items} =
     replayq:pop(Q, #{bytes_limit => BytesLimit, count_limit => 999999999}),
+  IDs = lists:map(fun({ID, _}) -> ID end, get_calls_from_queue_items(Items)),
+  NewPendingAcks = wolff_pendack:move_backlog_to_inflight(PendingAcks, IDs),
   wolff_metrics:queuing_set(Config, replayq:count(NewQ)),
   NewSentReqsCount = SentReqsCount + 1,
   NrOfCalls = count_calls(Items),
@@ -515,7 +518,8 @@ send_to_kafka(#{sent_reqs := SentReqs,
           },
   St2 = St1#{sent_reqs := queue:in(Sent, SentReqs),
              sent_reqs_count := NewSentReqsCount,
-             inflight_calls := NewInflightCalls
+             inflight_calls := NewInflightCalls,
+             pending_acks := NewPendingAcks
             },
   ok = request_async(Conn, Req),
   St3 = maybe_fake_kafka_ack(NoAck, Sent, St2),
@@ -756,7 +760,7 @@ ensure_delayed_reconnect(St, _Delay) ->
 evaluate_pending_ack_funs(PendingAcks, [], _BaseOffset) -> PendingAcks;
 evaluate_pending_ack_funs(PendingAcks, [{CallId, BatchSize} | Rest], BaseOffset) ->
   NewPendingAcks =
-    case wolff_pendack:take(PendingAcks, CallId) of
+    case wolff_pendack:take_inflight(PendingAcks, CallId) of
       {ok, AckCb, PendingAcks1} ->
         ok = eval_ack_cb(AckCb, BaseOffset),
         PendingAcks1;
@@ -913,7 +917,7 @@ enqueue_calls2(Calls,
           %% keep callback funs in memory, do not seralize it into queue because
           %% saving anonymous function to disk may easily lead to badfun exception
           %% in case of restart on newer version beam.
-          {CallId, PendingAcksOut} = wolff_pendack:insert(PendingAcksIn, ?ACK_CB(AckFun, Partition)),
+          {CallId, PendingAcksOut} = wolff_pendack:insert_backlog(PendingAcksIn, ?ACK_CB(AckFun, Partition)),
           NewItems = [make_queue_item(CallId, Batch) | Items],
           {NewItems, PendingAcksOut, Size + batch_bytes(Batch)}
       end, {[], PendingAcks0, 0}, Calls),
@@ -959,12 +963,14 @@ handle_overflow(#{replayq := Q,
     replayq:pop(Q, #{bytes_limit => Overflow, count_limit => 999999999}),
   ok = replayq:ack(NewQ, QAckRef),
   Calls = get_calls_from_queue_items(Items),
+  CallIDs = lists:map(fun({CallId, _BatchSize}) -> CallId end, Calls),
   NrOfCalls = count_calls(Items),
   wolff_metrics:dropped_queue_full_inc(Config, NrOfCalls),
   wolff_metrics:dropped_inc(Config, NrOfCalls),
   wolff_metrics:queuing_set(Config, replayq:count(NewQ)),
   ok = maybe_log_discard(St, NrOfCalls),
-  NewPendingAcks = evaluate_pending_ack_funs(PendingAcks, Calls, ?buffer_overflow_discarded),
+  {CbList, NewPendingAcks} = wolff_pendack:drop_backlog(PendingAcks, CallIDs),
+  lists:foreach(fun(Cb) -> eval_ack_cb(Cb, ?buffer_overflow_discarded) end, CbList),
   St#{replayq := NewQ, pending_acks := NewPendingAcks}.
 
 %% use process dictionary for upgrade without restart
