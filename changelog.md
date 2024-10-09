@@ -1,6 +1,6 @@
 * 4.0.2
   - Fix dynamic topic producer initialization failure handling (introduced in 3.0.0).
-  - Fix `unexpected_id` crash when replayq overflow.
+  - Fix `unexpected_id` crash when replayq overflow (introduced in 4.0.1).
 
 * 4.0.1
   - Minimize callback context for sync call.
