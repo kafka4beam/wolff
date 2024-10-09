@@ -316,6 +316,69 @@ zero_ack_test() ->
   ets:delete(CntrEventsTable),
   deinstall_event_logging(?FUNCTION_NAME).
 
+replayq_overflow_while_inflight_test() ->
+  ClientCfg = client_config(),
+  {ok, Client} = start_client(<<"client-1">>, ?HOSTS, ClientCfg),
+  Msg = fun(Value) -> #{key => <<>>, value => Value} end,
+  Batch = fun(Value) -> [Msg(Value), Msg(Value)] end,
+  BatchSize = wolff_producer:batch_bytes(Batch(<<"testdata1">>)),
+  ProducerCfg = #{max_batch_bytes => 1, %% ensure send one call at a time
+                  replayq_max_total_bytes => BatchSize,
+                  required_acks => all_isr,
+                  max_send_ahead => 0 %% ensure one sent to kafka at a time
+                 },
+  {ok, Producers} = wolff:start_producers(Client, <<"test-topic">>, ProducerCfg),
+  Pid = wolff_producers:lookup_producer(Producers, 0),
+  ?assert(is_process_alive(Pid)),
+  TesterPid = self(),
+  ok = meck:new(kpro, [no_history, no_link, passthrough]),
+  meck:expect(kpro, send,
+              fun(_Conn, Req) ->
+                      Payload = iolist_to_binary(lists:last(tuple_to_list(Req))),
+                      [_, <<N, _/binary>>] = binary:split(Payload, <<"testdata">>),
+                      TesterPid ! {sent_to_kafka, <<"testdata", N>>},
+                      ok
+              end),
+  AckFun1 = fun(_Partition, BaseOffset) -> TesterPid ! {ack_1, BaseOffset}, ok end,
+  AckFun2 = fun(_Partition, BaseOffset) -> TesterPid ! {ack_2, BaseOffset}, ok end,
+  AckFun3 = fun(_Partition, BaseOffset) -> TesterPid ! {ack_3, BaseOffset}, ok end,
+  SendF = fun(AckFun, Value) -> wolff:send(Producers, Batch(Value), AckFun) end,
+  %% send 3 batches first will be inflight, 2nd is overflow (kicked out by the 3rd)
+  proc_lib:spawn_link(fun() -> SendF(AckFun1, <<"testdata1">>) end),
+  proc_lib:spawn_link(fun() -> timer:sleep(5), SendF(AckFun2, <<"testdata2">>) end),
+  proc_lib:spawn_link(fun() -> timer:sleep(10), SendF(AckFun3, <<"testdata3">>) end),
+  try
+    %% the 1st batch is sent to Kafka, but no reply, so no ack
+    receive
+      {sent_to_kafka, <<"testdata1">>} -> ok;
+      {ack_1, _} -> error(unexpected)
+    after
+        2000 ->
+            error(timeout)
+    end,
+    %% the 2nd batch should be dropped (pushed out by the 3rd)
+    receive
+      {ack_2, buffer_overflow_discarded} -> ok;
+      {sent_to_kafka, <<"testdata2">>} -> error(unexpected);
+      {sent_to_kafka, Offset2} -> error({unexpected, Offset2})
+    after
+        2000 ->
+            io:format(user, "~p~n", [sys:get_state(Pid)]),
+            error(timeout)
+    end,
+    %% the 3rd batch should stay in the queue
+    receive
+      {ack_3, Any} -> error({unexpected, Any})
+    after
+        100 ->
+            ok
+    end
+  after
+    meck:unload(kpro),
+    ok = wolff:stop_producers(Producers),
+    ok = stop_client(Client)
+  end.
+
 replayq_overflow_test() ->
   CntrEventsTable = ets:new(cntr_events, [public]),
   install_event_logging(?FUNCTION_NAME, CntrEventsTable, false),
@@ -928,7 +991,9 @@ install_event_logging(TestCaseName, EventRecordTable, LogEvents) ->
         fun wolff_tests:handle_telemetry_event/4,
         #{record_table => EventRecordTable,
           log_events => LogEvents}
-    ).
+    ),
+    timer:sleep(100),
+    ok.
 
 telemetry_events() ->
     [

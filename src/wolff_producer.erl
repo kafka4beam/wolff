@@ -497,10 +497,13 @@ send_to_kafka(#{sent_reqs := SentReqs,
                 inflight_calls := InflightCalls,
                 replayq := Q,
                 config := #{max_batch_bytes := BytesLimit} = Config,
-                conn := Conn
+                conn := Conn,
+                pending_acks := PendingAcks
                } = St0) ->
   {NewQ, QAckRef, Items} =
     replayq:pop(Q, #{bytes_limit => BytesLimit, count_limit => 999999999}),
+  IDs = lists:map(fun({ID, _}) -> ID end, get_calls_from_queue_items(Items)),
+  NewPendingAcks = wolff_pendack:move_backlog_to_inflight(PendingAcks, IDs),
   wolff_metrics:queuing_set(Config, replayq:count(NewQ)),
   NewSentReqsCount = SentReqsCount + 1,
   NrOfCalls = count_calls(Items),
@@ -515,7 +518,8 @@ send_to_kafka(#{sent_reqs := SentReqs,
           },
   St2 = St1#{sent_reqs := queue:in(Sent, SentReqs),
              sent_reqs_count := NewSentReqsCount,
-             inflight_calls := NewInflightCalls
+             inflight_calls := NewInflightCalls,
+             pending_acks := NewPendingAcks
             },
   ok = request_async(Conn, Req),
   St3 = maybe_fake_kafka_ack(NoAck, Sent, St2),
@@ -534,7 +538,8 @@ is_send_ahead_allowed(#{config := #{max_send_ahead := Max},
 is_idle(#{replayq := Q, sent_reqs_count := SentReqsCount}) ->
   SentReqsCount =:= 0 andalso replayq:count(Q) =:= 0.
 
-now_ts() ->erlang:system_time(millisecond).
+now_ts() ->
+    erlang:system_time(millisecond).
 
 make_queue_item(CallId, Batch) ->
   ?Q_ITEM(CallId, now_ts(), Batch).
@@ -755,7 +760,7 @@ ensure_delayed_reconnect(St, _Delay) ->
 evaluate_pending_ack_funs(PendingAcks, [], _BaseOffset) -> PendingAcks;
 evaluate_pending_ack_funs(PendingAcks, [{CallId, BatchSize} | Rest], BaseOffset) ->
   NewPendingAcks =
-    case wolff_pendack:take(PendingAcks, CallId) of
+    case wolff_pendack:take_inflight(PendingAcks, CallId) of
       {ok, AckCb, PendingAcks1} ->
         ok = eval_ack_cb(AckCb, BaseOffset),
         PendingAcks1;
@@ -838,10 +843,9 @@ collect_send_calls(Call, Bytes, ?EMPTY, Max) ->
   Init = #{ts => now_ts(), bytes => 0, batch_r => []},
   collect_send_calls(Call, Bytes, Init, Max);
 collect_send_calls(Call, Bytes, Calls, Max) ->
-  #{ts := Ts, bytes := Bytes0, batch_r := BatchR} = Calls,
+  #{bytes := Bytes0, batch_r := BatchR} = Calls,
   Sum = Bytes0 + Bytes,
-  R = Calls#{ts => Ts,
-             bytes => Sum,
+  R = Calls#{bytes => Sum,
              batch_r => [Call | BatchR]
             },
   case Sum < Max of
@@ -913,7 +917,7 @@ enqueue_calls2(Calls,
           %% keep callback funs in memory, do not seralize it into queue because
           %% saving anonymous function to disk may easily lead to badfun exception
           %% in case of restart on newer version beam.
-          {CallId, PendingAcksOut} = wolff_pendack:insert(PendingAcksIn, ?ACK_CB(AckFun, Partition)),
+          {CallId, PendingAcksOut} = wolff_pendack:insert_backlog(PendingAcksIn, ?ACK_CB(AckFun, Partition)),
           NewItems = [make_queue_item(CallId, Batch) | Items],
           {NewItems, PendingAcksOut, Size + batch_bytes(Batch)}
       end, {[], PendingAcks0, 0}, Calls),
@@ -959,12 +963,14 @@ handle_overflow(#{replayq := Q,
     replayq:pop(Q, #{bytes_limit => Overflow, count_limit => 999999999}),
   ok = replayq:ack(NewQ, QAckRef),
   Calls = get_calls_from_queue_items(Items),
+  CallIDs = lists:map(fun({CallId, _BatchSize}) -> CallId end, Calls),
   NrOfCalls = count_calls(Items),
   wolff_metrics:dropped_queue_full_inc(Config, NrOfCalls),
   wolff_metrics:dropped_inc(Config, NrOfCalls),
   wolff_metrics:queuing_set(Config, replayq:count(NewQ)),
   ok = maybe_log_discard(St, NrOfCalls),
-  NewPendingAcks = evaluate_pending_ack_funs(PendingAcks, Calls, ?buffer_overflow_discarded),
+  {CbList, NewPendingAcks} = wolff_pendack:drop_backlog(PendingAcks, CallIDs),
+  lists:foreach(fun(Cb) -> eval_ack_cb(Cb, ?buffer_overflow_discarded) end, CbList),
   St#{replayq := NewQ, pending_acks := NewPendingAcks}.
 
 %% use process dictionary for upgrade without restart
@@ -981,7 +987,7 @@ maybe_log_discard(St, Increment) ->
 maybe_log_discard(#{topic := Topic, partition := Partition},
                   Increment,
                   #{last_ts := LastTs, last_cnt := LastCnt, acc_cnt := AccCnt}) ->
-  NowTs = erlang:system_time(millisecond),
+  NowTs = now_ts(),
   NewAccCnt = AccCnt + Increment,
   DiffCnt = NewAccCnt - LastCnt,
   case NowTs - LastTs > ?MIN_DISCARD_LOG_INTERVAL of
@@ -1080,7 +1086,7 @@ maybe_log_discard_test_() ->
     [ {"no-increment", fun() -> maybe_log_discard(undefined, 0) end}
     , {"fake-last-old",
        fun() ->
-         Ts0 = erlang:system_time(millisecond) - ?MIN_DISCARD_LOG_INTERVAL - 1,
+         Ts0 = now_ts() - ?MIN_DISCARD_LOG_INTERVAL - 1,
          ok = put_overflow_log_state(Ts0, 2, 2),
          ok = maybe_log_discard(#{topic => <<"a">>, partition => 0}, 1),
          St = get_overflow_log_state(),
@@ -1089,7 +1095,7 @@ maybe_log_discard_test_() ->
        end}
     , {"fake-last-fresh",
        fun() ->
-         Ts0 = erlang:system_time(millisecond),
+         Ts0 = now_ts(),
          ok = put_overflow_log_state(Ts0, 2, 2),
          ok = maybe_log_discard(#{topic => <<"a">>, partition => 0}, 2),
          St = get_overflow_log_state(),
