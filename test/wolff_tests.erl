@@ -117,6 +117,10 @@ send_test() ->
   ?assert_eq_optional_tail(
      wolff_test_utils:dedup_list(get_telemetry_seq(CntrEventsTable, [wolff, queuing])),
      [0,1,0]),
+  ?assertMatch(
+     [0,N,0] when N > 0,
+     wolff_test_utils:dedup_list(get_telemetry_seq(CntrEventsTable, [wolff, queuing_bytes]))
+    ),
   ?assert_eq_optional_tail(
      wolff_test_utils:dedup_list(get_telemetry_seq(CntrEventsTable, [wolff, inflight])),
      [0,1,0]),
@@ -156,6 +160,9 @@ send_one_msg_max_batch_test() ->
      wolff_test_utils:dedup_list(get_telemetry_seq(CntrEventsTable, [wolff, queuing])),
      [0,1,0]),
   ?assert_eq_optional_tail(
+     wolff_test_utils:dedup_list(get_telemetry_seq(CntrEventsTable, [wolff, queuing_bytes])),
+     [0,EstimatedBytes,0]),
+  ?assert_eq_optional_tail(
      wolff_test_utils:dedup_list(get_telemetry_seq(CntrEventsTable, [wolff, inflight])),
      [0,1,0]),
   [1] = get_telemetry_seq(CntrEventsTable, [wolff, success]),
@@ -192,6 +199,9 @@ send_smallest_msg_max_batch_test() ->
   ?assert_eq_optional_tail(
      wolff_test_utils:dedup_list(get_telemetry_seq(CntrEventsTable, [wolff, queuing])),
      [0,1,0]),
+  ?assert_eq_optional_tail(
+     wolff_test_utils:dedup_list(get_telemetry_seq(CntrEventsTable, [wolff, queuing_bytes])),
+     [0,batch_bytes(Batch),0]),
   ?assert_eq_optional_tail(
      wolff_test_utils:dedup_list(get_telemetry_seq(CntrEventsTable, [wolff, inflight])),
      [0,1,0]),
@@ -433,6 +443,9 @@ replayq_overflow_test() ->
      wolff_test_utils:dedup_list(get_telemetry_seq(CntrEventsTable, [wolff, queuing])),
      [0,2,1,0]),
   ?assert_eq_optional_tail(
+     wolff_test_utils:dedup_list(get_telemetry_seq(CntrEventsTable, [wolff, queuing_bytes])),
+     [0,64,32,0]),
+  ?assert_eq_optional_tail(
      wolff_test_utils:dedup_list(get_telemetry_seq(CntrEventsTable, [wolff, inflight])),
      [0,1,0]),
   [1] = get_telemetry_seq(CntrEventsTable, [wolff, success]),
@@ -503,6 +516,9 @@ replayq_highmem_overflow_test() ->
   ?assert_eq_optional_tail(
      wolff_test_utils:dedup_list(get_telemetry_seq(CntrEventsTable, [wolff, queuing])),
      [0, 1, 0, 1, 0, 1, 0]),
+  ?assert_eq_optional_tail(
+     wolff_test_utils:dedup_list(get_telemetry_seq(CntrEventsTable, [wolff, queuing_bytes])),
+     [0,32,0,32,0,32,0]),
   ?assert_eq_optional_tail(
      wolff_test_utils:dedup_list(get_telemetry_seq(CntrEventsTable, [wolff, inflight])),
      [0,1,0]),
@@ -599,6 +615,10 @@ replayq_offload_test() ->
   ?assert_eq_optional_tail(
      wolff_test_utils:dedup_list(get_telemetry_seq(CntrEventsTable, [wolff, queuing])),
      [0, 1, 0]),
+  ?assertMatch(
+     [0,N,0] when N > 0,
+     wolff_test_utils:dedup_list(get_telemetry_seq(CntrEventsTable, [wolff, queuing_bytes]))
+    ),
   ?assert_eq_optional_tail(
      wolff_test_utils:dedup_list(get_telemetry_seq(CntrEventsTable, [wolff, inflight])),
      [0, 1, 0]),
@@ -949,13 +969,7 @@ handle_telemetry_event(
 ) ->
     case EventRecordTable =/= none of
         true ->
-            PastEvents = case ets:lookup(EventRecordTable, EventId) of
-                             [] -> [];
-                             [{_EventId, PE}] -> PE
-                         end,
-            NewEventList = [ #{metrics_data => MetricsData,
-                               meta_data => MetaData} | PastEvents],
-            ets:insert(EventRecordTable, {EventId, NewEventList});
+            do_handle_telemetry_event(EventRecordTable, EventId, MetricsData, MetaData);
         false ->
             ok
     end,
@@ -965,6 +979,21 @@ handle_telemetry_event(
                    [EventId, MetricsData, MetaData]);
         false ->
             ok
+    end.
+
+do_handle_telemetry_event(EventRecordTable, EventId, MetricsData, MetaData) ->
+    try
+        PastEvents = case ets:lookup(EventRecordTable, EventId) of
+                         [] -> [];
+                         [{_EventId, PE}] -> PE
+                     end,
+        NewEventList = [ #{metrics_data => MetricsData,
+                           meta_data => MetaData} | PastEvents],
+        ets:insert(EventRecordTable, {EventId, NewEventList})
+    catch
+        error:badarg:Stacktrace ->
+            ct:pal("<<< error handling telemetry event >>>\n[event id]: ~p\n[metrics data]: ~p\n[meta data]: ~p\n\nStacktrace:\n  ~p\n",
+                   [EventId, MetricsData, MetaData, Stacktrace])
     end.
 
 telemetry_id() ->
@@ -1001,6 +1030,7 @@ telemetry_events() ->
       [wolff, dropped_queue_full],
       [wolff, matched],
       [wolff, queuing],
+      [wolff, queuing_bytes],
       [wolff, retried],
       [wolff, failed],
       [wolff, inflight],

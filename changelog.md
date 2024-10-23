@@ -1,3 +1,6 @@
+* 4.0.3
+  - Added the `[wolff, queuing_bytes]` telemetry event which reports the amount of RAM/disk used by producer queues.
+
 * 4.0.2
   - Fix dynamic topic producer initialization failure handling (introduced in 3.0.0).
   - Fix `unexpected_id` crash when replayq overflow (introduced in 4.0.1).
