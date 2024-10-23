@@ -4,6 +4,7 @@
 -export([
     inflight_set/2,
     queuing_set/2,
+    queuing_bytes_set/2,
     dropped_inc/1,
     dropped_inc/2,
     dropped_queue_full_inc/1,
@@ -26,6 +27,12 @@
 %% @doc Count of requests (batches of messages) that are currently queuing. [Gauge]
 queuing_set(Config, Val) ->
     telemetry:execute([wolff, queuing],
+                      #{gauge_set => Val},
+                      telemetry_meta_data(Config)).
+
+%% @doc Number of bytes (RAM and/or disk) currently queuing. [Gauge]
+queuing_bytes_set(Config, Val) ->
+    telemetry:execute([wolff, queuing_bytes],
                       #{gauge_set => Val},
                       telemetry_meta_data(Config)).
 

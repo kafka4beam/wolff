@@ -275,6 +275,7 @@ do_init(#{client_id := ClientId,
   Config2 = resolve_max_linger_bytes(Config1, Q),
   Config = maps:without([replayq_dir, replayq_seg_bytes], Config2),
   wolff_metrics:queuing_set(Config, replayq:count(Q)),
+  wolff_metrics:queuing_bytes_set(Config, replayq:bytes(Q)),
   wolff_metrics:inflight_set(Config, 0),
   St#{replayq => Q,
       config := Config,
@@ -376,9 +377,11 @@ clear_gauges(#{config := Config}, Q) ->
 maybe_reset_queuing(Config, Q) ->
   case {replayq:count(Q), is_replayq_durable(Config, Q)} of
     {0, _} ->
-      wolff_metrics:queuing_set(Config, 0);
+      wolff_metrics:queuing_set(Config, 0),
+      wolff_metrics:queuing_bytes_set(Config, 0);
     {_, false} ->
-      wolff_metrics:queuing_set(Config, 0);
+      wolff_metrics:queuing_set(Config, 0),
+      wolff_metrics:queuing_bytes_set(Config, 0);
     {_, _} ->
       ok
   end.
@@ -505,6 +508,7 @@ send_to_kafka(#{sent_reqs := SentReqs,
   IDs = lists:map(fun({ID, _}) -> ID end, get_calls_from_queue_items(Items)),
   NewPendingAcks = wolff_pendack:move_backlog_to_inflight(PendingAcks, IDs),
   wolff_metrics:queuing_set(Config, replayq:count(NewQ)),
+  wolff_metrics:queuing_bytes_set(Config, replayq:bytes(NewQ)),
   NewSentReqsCount = SentReqsCount + 1,
   NrOfCalls = count_calls(Items),
   NewInflightCalls = InflightCalls + NrOfCalls,
@@ -923,6 +927,7 @@ enqueue_calls2(Calls,
       end, {[], PendingAcks0, 0}, Calls),
    NewQ = replayq:append(Q, lists:reverse(QueueItems)),
    wolff_metrics:queuing_set(Config0, replayq:count(NewQ)),
+   wolff_metrics:queuing_bytes_set(Config0, replayq:bytes(NewQ)),
    lists:foreach(fun maybe_reply_queued/1, Calls),
    Overflow = case maps:get(drop_if_highmem, Config0, false)
                   andalso replayq:is_mem_only(NewQ)
@@ -968,6 +973,7 @@ handle_overflow(#{replayq := Q,
   wolff_metrics:dropped_queue_full_inc(Config, NrOfCalls),
   wolff_metrics:dropped_inc(Config, NrOfCalls),
   wolff_metrics:queuing_set(Config, replayq:count(NewQ)),
+  wolff_metrics:queuing_bytes_set(Config, replayq:bytes(NewQ)),
   ok = maybe_log_discard(St, NrOfCalls),
   {CbList, NewPendingAcks} = wolff_pendack:drop_backlog(PendingAcks, CallIDs),
   lists:foreach(fun(Cb) -> eval_ack_cb(Cb, ?buffer_overflow_discarded) end, CbList),
