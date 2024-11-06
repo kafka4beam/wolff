@@ -1,3 +1,6 @@
+* 4.0.4
+  - Upgrade to kafka_protocol-4.1.10 for discover/connect timeout fix.
+
 * 4.0.3
   - Added the `[wolff, queuing_bytes]` telemetry event which reports the amount of RAM/disk used by producer queues.
 
@@ -7,7 +10,7 @@
 
 * 4.0.1
   - Minimize callback context for sync call.
-  - Upgrade to kafka_protocl-4.1.9 for OTP 27.
+  - Upgrade to kafka_protocol-4.1.9 for OTP 27.
 
 * 4.0.0
   - Delete global stats (deprecated since 1.9).
