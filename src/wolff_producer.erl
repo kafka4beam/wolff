@@ -163,7 +163,7 @@ start_link(ClientId, Topic, Partition, MaybeConnPid, Config) ->
   gen_server:start_link(?MODULE, St, SpawnOpts).
 
 stop(Pid) ->
-  gen_server:call(Pid, stop, infinity).
+  gen_server:stop(Pid).
 
 %% @equiv send(Pid, Batch, AckFun, wait_for_queued)
 -spec send(pid(), [wolff:msg()], wolff:ack_fun()) -> ok.
