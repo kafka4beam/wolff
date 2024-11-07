@@ -1,5 +1,6 @@
 * 4.0.4
   - Upgrade to kafka_protocol-4.1.10 for discover/connect timeout fix.
+  - Upgrade to replayq from 0.3.4 to 0.3.10.
 
 * 4.0.3
   - Added the `[wolff, queuing_bytes]` telemetry event which reports the amount of RAM/disk used by producer queues.
