@@ -1,3 +1,6 @@
+* 4.0.5
+  - Fix `unexpected_id` crash introduced in 4.0.1.
+
 * 4.0.4
   - Upgrade to kafka_protocol-4.1.10 for discover/connect timeout fix.
   - Upgrade to replayq from 0.3.4 to 0.3.10.

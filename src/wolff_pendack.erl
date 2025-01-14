@@ -58,6 +58,18 @@ insert_backlog(#{next_id := Id, backlog := Cbs, count := Count} = X, Cb) ->
     NewCbs = insert_cb(Cbs, Id, Cb),
     {Id, X#{next_id => Id + 1, backlog => NewCbs, count => Count + 1}}.
 
+%% For inflights, there can be a gap if some calls have been dropped
+%% from  the backlog.
+%% So we catch the non_sequential_call_id error and enqueue as a
+%% new ID range.
+insert_inflight(Cbs, Id, Cb) ->
+    try
+        insert_cb(Cbs, Id, Cb)
+    catch
+        error:{non_sequential_call_id, _, _} ->
+            queue:in({Id, Cb}, Cbs)
+    end.
+
 insert_cb(Cbs, Id, Cb) ->
     case queue:out_r(Cbs) of
         {empty, _} ->
@@ -76,11 +88,16 @@ insert_cb1(Cbs, Key, Cb, Id, Cb1) ->
     queue:in({Id, Cb1}, queue:in({Key, Cb}, Cbs)).
 
 %% If the ID is a single integer, then expand it to a range.
+%% Assert that new ID is the very next (+1) ID.
+%% The assertion should not fail for backlog queue because the next_id
+%% keeps track of it (otherwise a bug).
+%% The assertion may fail for inflight queue if backlog was dropped
+%% (e.g. due to OOM protection) so it is expected to be caught.
 expand_id(Id0, Id) when is_integer(Id0) ->
-    Id =:= Id0 + 1 orelse error({unexpected_id, Id0, Id}),
+    Id =:= Id0 + 1 orelse error({non_sequential_call_id, Id0, Id}),
     expand_id({Id0, Id0}, Id);
 expand_id({MinId, MaxId}, Id) ->
-    Id =:= MaxId + 1 orelse error({unexpected_id, {MinId, MaxId}, Id}),
+    Id =:= MaxId + 1 orelse error({non_sequential_call_id, {MinId, MaxId}, Id}),
     {MinId, Id}.
 
 %% @doc Take the callback from the inflight queue.
@@ -149,6 +166,6 @@ move1(#{backlog := Backlog0, inflight := Inflight0} = X, Id) ->
         false ->
             X;
         {ok, Cb, Backlog} ->
-            Inflight = insert_cb(Inflight0, Id, Cb),
-           X#{backlog := Backlog, inflight := Inflight}
+            Inflight = insert_inflight(Inflight0, Id, Cb),
+            X#{backlog := Backlog, inflight := Inflight}
     end.

@@ -514,20 +514,20 @@ send_to_kafka(#{sent_reqs := SentReqs,
   NewInflightCalls = InflightCalls + NrOfCalls,
   _ = wolff_metrics:inflight_set(Config, NewInflightCalls),
   #kpro_req{ref = Ref, no_ack = NoAck} = Req = make_request(Items, St0),
-  St1 = St0#{replayq := NewQ},
   Sent = #{req_ref => Ref,
            q_items => Items,
            q_ack_ref => QAckRef,
            attempts => 1
           },
-  St2 = St1#{sent_reqs := queue:in(Sent, SentReqs),
+  St1 = St0#{replayq := NewQ,
+             sent_reqs := queue:in(Sent, SentReqs),
              sent_reqs_count := NewSentReqsCount,
              inflight_calls := NewInflightCalls,
              pending_acks := NewPendingAcks
             },
   ok = request_async(Conn, Req),
-  St3 = maybe_fake_kafka_ack(NoAck, Sent, St2),
-  maybe_send_to_kafka(St3).
+  St2 = maybe_fake_kafka_ack(NoAck, Sent, St1),
+  maybe_send_to_kafka(St2).
 
 %% when require no acks do not add to sent_reqs and ack caller immediately
 maybe_fake_kafka_ack(_NoAck = true, Sent, St) ->

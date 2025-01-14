@@ -12,10 +12,10 @@
          deinstall_event_logging/1,
          print_telemetry_check/2]).
 
-
 -include_lib("eunit/include/eunit.hrl").
 -include_lib("lc/include/lc.hrl").
 -include("wolff.hrl").
+-include_lib("kafka_protocol/include/kpro.hrl").
 
 -define(KEY, key(?FUNCTION_NAME)).
 -define(HOSTS, [{"localhost", 9092}]).
@@ -326,6 +326,7 @@ zero_ack_test() ->
   ets:delete(CntrEventsTable),
   deinstall_event_logging(?FUNCTION_NAME).
 
+%% replayq overflow while inflight is not empty
 replayq_overflow_while_inflight_test() ->
   ClientCfg = client_config(),
   {ok, Client} = start_client(<<"client-1">>, ?HOSTS, ClientCfg),
@@ -376,7 +377,7 @@ replayq_overflow_while_inflight_test() ->
             io:format(user, "~p~n", [sys:get_state(Pid)]),
             error(timeout)
     end,
-    %% the 3rd batch should stay in the queue
+    %% the 3rd batch should stay in the queue because max_send_ahead is 0
     receive
       {ack_3, Any} -> error({unexpected, Any})
     after
@@ -388,6 +389,108 @@ replayq_overflow_while_inflight_test() ->
     ok = wolff:stop_producers(Producers),
     ok = stop_client(Client)
   end.
+
+%% replayq overflow while inflight is not empty and resend after Kafka is connected again
+replayq_overflow_while_disconnected_test() ->
+  ClientCfg = client_config(),
+  {ok, Client} = start_client(<<"client-1">>, ?HOSTS, ClientCfg),
+  Msg = fun(Value) -> #{key => <<>>, value => Value} end,
+  Batch = fun(Value) -> [Msg(Value), Msg(Value)] end,
+  BatchSize = wolff_producer:batch_bytes(Batch(<<"testdata1">>)),
+  ProducerCfg = #{max_batch_bytes => 1, %% ensure send one call at a time
+                  replayq_max_total_bytes => BatchSize,
+                  required_acks => all_isr,
+                  max_send_ahead => 1, %% allow 2 inflight requests
+                  reconnect_delay_ms => 0
+                 },
+  {ok, Producers} = wolff:start_producers(Client, <<"test-topic">>, ProducerCfg),
+  Pid = wolff_producers:lookup_producer(Producers, 0),
+  #{conn := Conn} = sys:get_state(Pid),
+  ?assert(is_process_alive(Pid)),
+  TesterPid = self(),
+  ok = meck:new(kpro, [no_history, no_link, passthrough]),
+  meck:expect(kpro, send,
+              fun(_Conn, Req) ->
+                      Payload = iolist_to_binary(lists:last(tuple_to_list(Req))),
+                      [_, <<N, _/binary>>] = binary:split(Payload, <<"testdata">>),
+                      TesterPid ! {sent_to_kafka, <<"testdata", N>>},
+                      ok
+              end),
+  AckFun = fun(_Partition, BaseOffset) -> TesterPid ! {ack, BaseOffset}, ok end,
+  SendF = fun(AckFun0, Value) -> wolff:send(Producers, Batch(Value), AckFun0) end,
+  %% send 4 batches first 2 will be inflight, 3nd is overflow (kicked out by the 4th)
+  proc_lib:spawn_link(fun() -> SendF(AckFun, <<"testdata1">>) end),
+  proc_lib:spawn_link(fun() -> timer:sleep(5), SendF(AckFun, <<"testdata2">>) end),
+  proc_lib:spawn_link(fun() -> timer:sleep(10), SendF(AckFun, <<"testdata3">>) end),
+  proc_lib:spawn_link(fun() -> timer:sleep(15), SendF(AckFun, <<"testdata4">>) end),
+  ExpectSent =
+    fun(Payload) ->
+      receive
+        {sent_to_kafka, Payload} -> ok
+      after
+        2000 ->
+            error(timeout)
+      end
+    end,
+  ExpectAck =
+    fun(Offset) ->
+      receive
+        {ack, Offset} -> ok
+      after
+        2000 -> error(timeout)
+      end
+    end,
+  try
+    %% the 1st batch is sent to Kafka, but no reply, so no ack
+    ok = ExpectSent(<<"testdata1">>),
+    ok = ExpectSent(<<"testdata2">>),
+    %% kill the connection, producer should trigger a reconnect
+    exit(Conn, kill),
+    %% the 3rd batch should be dropped (pushed out by the 4th)
+    ok = ExpectAck(buffer_overflow_discarded),
+    %% after reconnected, expect a resend of first 2 messages to Kafka
+    ok = ExpectSent(<<"testdata1">>),
+    ok = ExpectSent(<<"testdata2">>),
+    %% the 4th batch should stay in the queue because max_send_ahead is 1 (max-inflight=2)
+    receive
+      {sent_to_kafka, <<"testdata4">>} -> error(unexpected);
+      {ack, _} = Ack -> error({unexpected, Ack})
+    after
+        100 ->
+            ok
+    end,
+    %% fake a Kafka produce response for the 1st message
+    ok = mock_kafka_ack(Pid, 1),
+    %% expect the ack for the 1st message
+    ok = ExpectAck(1),
+    %% now expect the 4th message to be sent
+    ok = ExpectSent(<<"testdata4">>)
+  after
+    meck:unload(kpro),
+    ok = wolff:stop_producers(Producers),
+    ok = stop_client(Client)
+  end.
+
+mock_kafka_ack(Pid, Offset) ->
+    #{conn := NewConn, sent_reqs := SentReqs} = sys:get_state(Pid),
+    {value, #{req_ref := ReqRef}} = queue:peek(SentReqs),
+    RspBody =
+      #{responses =>
+        [#{topic => <<"test-topic">>,
+           partition_responses =>
+           [#{partition => 0,
+              error_code => no_error,
+              base_offset => Offset,
+              error_message => <<>>,
+              log_start_offset => 0,
+              log_append_time => -1,
+              record_errors => []}
+           ]}]},
+    Rsp = #kpro_rsp{api = produce,
+                    ref = ReqRef,
+                    msg = RspBody},
+    Pid ! {msg, NewConn, Rsp},
+    ok.
 
 replayq_overflow_test() ->
   CntrEventsTable = ets:new(cntr_events, [public]),
