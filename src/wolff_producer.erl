@@ -977,6 +977,7 @@ handle_overflow(#{replayq := Q,
   ok = maybe_log_discard(St, NrOfCalls),
   {CbList, NewPendingAcks} = wolff_pendack:drop_backlog(PendingAcks, CallIDs),
   lists:foreach(fun(Cb) -> eval_ack_cb(Cb, ?buffer_overflow_discarded) end, CbList),
+  load_ctl:is_high_mem() andalso garbage_collect(),
   St#{replayq := NewQ, pending_acks := NewPendingAcks}.
 
 %% use process dictionary for upgrade without restart

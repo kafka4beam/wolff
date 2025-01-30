@@ -1,3 +1,6 @@
+* 4.0.6
+  - Fix: force run garbage collection of producer process when there's buffer overflow and system memory usage is high.
+
 * 4.0.5
   - Fix `unexpected_id` crash introduced in 4.0.1.
 
