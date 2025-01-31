@@ -1,3 +1,8 @@
+* 4.0.6
+  - Use more aggressive buffer overflow mode when using memory mode buffer and the system memory usage is high, to reduce risk of OOM.
+  - Upgrade replayq from 0.3.10 to 0.3.12.
+  - Upgrade lc from 0.3.2 to 0.3.4.
+
 * 4.0.5
   - Fix `unexpected_id` crash introduced in 4.0.1.
 

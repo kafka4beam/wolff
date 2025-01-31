@@ -929,9 +929,11 @@ enqueue_calls2(Calls,
    wolff_metrics:queuing_set(Config0, replayq:count(NewQ)),
    wolff_metrics:queuing_bytes_set(Config0, replayq:bytes(NewQ)),
    lists:foreach(fun maybe_reply_queued/1, Calls),
-   Overflow = case maps:get(drop_if_highmem, Config0, false)
-                  andalso replayq:is_mem_only(NewQ)
-                  andalso load_ctl:is_high_mem() of
+   IsHighMemOverflow =
+        maps:get(drop_if_highmem, Config0, false)
+        andalso replayq:is_mem_only(NewQ)
+        andalso load_ctl:is_high_mem(),
+   Overflow = case IsHighMemOverflow of
                   true ->
                       max(replayq:overflow(NewQ), CallByteSize);
                   false ->
@@ -940,6 +942,7 @@ enqueue_calls2(Calls,
    handle_overflow(St0#{replayq := NewQ,
                         pending_acks := PendingAcks
                        },
+                   IsHighMemOverflow,
                    Overflow).
 
 maybe_reply_queued(?SEND_REQ(?no_queued_reply, _, _)) ->
@@ -956,16 +959,22 @@ eval_ack_cb(?ACK_CB({Caller, Ref}, Partition), BaseOffset) when ?IS_SYNC_REF(Cal
   _ = erlang:send(Caller, {Ref, Partition, BaseOffset}),
   ok.
 
-handle_overflow(St, Overflow) when Overflow =< 0 ->
+handle_overflow(St, _IsHighMemOverflow, Overflow) when Overflow =< 0 ->
     ok = maybe_log_discard(St, 0),
     St;
 handle_overflow(#{replayq := Q,
                   pending_acks := PendingAcks,
                   config := Config
                  } = St,
+                IsHighMemOverflow,
                 Overflow) ->
+  BytesMode =
+        case IsHighMemOverflow of
+            true -> at_least;
+            false -> at_most
+        end,
   {NewQ, QAckRef, Items} =
-    replayq:pop(Q, #{bytes_limit => Overflow, count_limit => 999999999}),
+    replayq:pop(Q, #{bytes_limit => {BytesMode, Overflow}, count_limit => 999999999}),
   ok = replayq:ack(NewQ, QAckRef),
   Calls = get_calls_from_queue_items(Items),
   CallIDs = lists:map(fun({CallId, _BatchSize}) -> CallId end, Calls),
