@@ -21,3 +21,4 @@ _build
 rebar3.crashdump
 test-data/
 doc/
+rebar.lock
