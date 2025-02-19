@@ -387,6 +387,10 @@ client_state_upgrade_test() ->
   ok = application:stop(wolff).
 
 fail_to_connect_all_test() ->
+  {timeout, 30,
+   fun() -> test_fail_to_connect_all() end}.
+
+test_fail_to_connect_all() ->
   ClientId = <<"fail-to-connect-test">>,
   _ = application:stop(wolff), %% ensure stopped
   {ok, _} = application:ensure_all_started(wolff),
