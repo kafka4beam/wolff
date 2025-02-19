@@ -2,7 +2,7 @@
 
 set -eu
 
-docker-compose up -d
+docker compose up -d
 
 n=0
 while ! docker exec wolff-kafka-2 bash -c '/opt/kafka/bin/kafka-topics.sh --zookeeper zookeeper --list' | grep 'test-topic'; do
