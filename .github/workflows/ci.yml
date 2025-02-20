@@ -11,8 +11,8 @@ jobs:
       fail-fast: false
       matrix:
         otp:
-          - '24.1'
-          - '23.3.4.7'
+          - '25'
+          - '24'
         kafka:
           - '2.4'
           - '1.1'
@@ -56,5 +56,5 @@ jobs:
     - name: Run tests
       run: |
           ./start-kafka.sh
-          make eunit || (cd scripts && docker-compose logs)
+          make eunit || (cd scripts && docker compose logs)
 

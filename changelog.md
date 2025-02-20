@@ -1,3 +1,9 @@
+* 1.5.15
+  - Improve logging for leader connection down reason.
+    Previously, if the connection is closed immediately after connected, the producer process may not get the chance to monitor the pid to get its exit reason.
+    Now wolff_client handles the 'EXIT' signal and keep it for future logging purpose.
+* 1.5.14
+  - Split batch if it's too large for Kafka.
 * 1.5.13
   - Use long-lived metadata connection.
     This is to avoid having to excessively re-establish connection when there are many concurrent connectivity checks.

@@ -157,6 +157,8 @@ handle_call(check_connectivity, _From,
 handle_call(_Call, _From, St) ->
   {noreply, St}.
 
+handle_info({'EXIT', Pid, Reason}, St) ->
+  {noreply, flush_exit_signals(St, Pid, Reason)};
 handle_info(_Info, St) ->
   {noreply, upgrade(St)}.
 
@@ -164,11 +166,15 @@ handle_cast(Cast, #{connect := _Fun} = St) ->
     handle_cast(Cast, upgrade(St));
 handle_cast({recv_leader_connection, Topic, Partition, Caller}, St0) ->
   case ensure_leader_connections(St0, Topic) of
-    {ok, St} ->
+    {ok, St1} ->
+      St = flush_exit_signals(St1),
       Partitions = do_get_leader_connections(St, Topic),
-      %% the Partition in argument is a result of ensure_leader_connections
-      %% so here the lists:keyfind must succeeded, otherwise a bug
-      {_, MaybePid} = lists:keyfind(Partition, 1, Partitions),
+      MaybePid = case lists:keyfind(Partition, 1, Partitions) of
+        {_, Pid} ->
+          Pid;
+        false ->
+          partition_missing_in_metadata_response
+      end,
       _ = erlang:send(Caller, ?leader_connection(MaybePid)),
       {noreply, St};
     {error, Reason} ->
@@ -193,6 +199,28 @@ terminate(_, #{conns := Conns} = St) ->
   {ok, St#{conns := #{}}}.
 
 %% == internals ======================================================
+
+flush_exit_signals(St0) ->
+  receive
+    {'EXIT', Pid, Reason} ->
+      flush_exit_signals(St0, Pid, Reason)
+  after
+    0 ->
+      St0
+  end.
+
+%% Keep the connection process EXIT reason in the state.
+%% If the pid is not found in the conns map, it's a no-op.
+%% For example, the metadata connection is not in the conns map.
+flush_exit_signals(#{conns := Conns0} = St0, Pid, Reason) ->
+  Conns = maps:to_list(Conns0),
+  St = case lists:keyfind(Pid, 2, Conns) of
+    false ->
+      St0;
+    {ConnId, Pid} ->
+      St0#{conns => maps:put(ConnId, Reason, Conns0)}
+  end,
+  flush_exit_signals(St).
 
 close_connections(Conns) ->
   lists:foreach(fun({_, Pid}) -> close_connection(Pid) end, maps:to_list(Conns)).

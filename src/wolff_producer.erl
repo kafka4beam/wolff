@@ -256,9 +256,6 @@ handle_info(?leader_connection(Conn), #{topic := Topic,
 handle_info(?leader_connection(?conn_down(Reason)), St0) ->
   St = mark_connection_down(St0#{reconnect_timer => ?no_timer}, Reason),
   {noreply, St};
-handle_info(?leader_connection(?conn_error(Reason)), St0) ->
-  St = mark_connection_down(St0#{reconnect_timer => ?no_timer}, Reason),
-  {noreply, St};
 handle_info(?reconnect, St0) ->
   St = St0#{reconnect_timer => ?no_timer},
   {noreply, ensure_delayed_reconnect(St, normal_delay)};
