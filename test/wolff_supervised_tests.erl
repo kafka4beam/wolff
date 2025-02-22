@@ -169,11 +169,11 @@ stop_with_name_test() ->
   ok = application:stop(wolff),
   ok.
 
-partition_count_refresh_test_() ->
+partition_count_increase_test_() ->
   {timeout, 30, %% it takes time to alter topic via cli in docker container
-   fun test_partition_count_refresh/0}.
+   fun test_partition_count_increase/0}.
 
-test_partition_count_refresh() ->
+test_partition_count_increase() ->
   ClientId = <<"test-add-more-partitions">>,
   Topic = <<"test-topic-3">>,
   _ = application:stop(wolff), %% ensure stopped
@@ -203,6 +203,54 @@ test_partition_count_refresh() ->
   timer:sleep(timer:seconds(IntervalSeconds * 2)),
   {Partition1, _} = wolff:send_sync(Producers, [Msg], 3000),
   ?assertEqual(Partitions0, Partition1).
+
+partition_count_decrease_test_() ->
+  {timeout, 30, %% it takes time to alter topic via cli in docker container
+   fun test_partition_count_decrease/0}.
+
+test_partition_count_decrease() ->
+  io:format(user, "test_partition_count_decrease\n", []),
+  ClientId = <<"test-add-more-partitions">>,
+  %% ensure the topic does not exist
+  Topic = <<"test-topic-4">>,
+  delete_topic(Topic),
+  Partitions0 = 3,
+  create_topic(Topic, Partitions0),
+  io:format(user, "created topic with ~p partitions\n", [Partitions0]),
+  _ = application:stop(wolff), %% ensure stopped
+  {ok, _} = application:ensure_all_started(wolff),
+  ClientCfg = #{min_metadata_refresh_interval => 0},
+  {ok, ClientPid} = wolff:ensure_supervised_client(ClientId, ?HOSTS, ClientCfg),
+  {ok, Connections0} = wolff_client:get_leader_connections(ClientPid, Topic),
+  ?assertEqual(Partitions0, length(Connections0)),
+  IntervalSeconds = 1,
+  Name = ?FUNCTION_NAME,
+  ProducerCfg = #{required_acks => all_isr,
+                  reconnect_delay_ms => 0,
+                  name => Name,
+                  partition_count_refresh_interval_seconds => IntervalSeconds
+                 },
+  {ok, _Producers} = wolff:ensure_supervised_producers(ClientId, Topic, ProducerCfg),
+  ?assertEqual(Partitions0, length(ets:tab2list(Name))),
+  %% delete the topic
+  delete_topic(Topic),
+  io:format(user, "topic deleted\n", []),
+  %% wait for the topic to be deleted
+  create_topic(Topic, Partitions0 - 1),
+  io:format(user, "created topic with ~p partitions\n", [Partitions0 - 1]),
+  %% wait for the topic to be recreated
+  timer:sleep(timer:seconds(IntervalSeconds * 4)),
+  {ok, Connections1} = wolff_client:get_leader_connections(ClientPid, Topic),
+  ?assertEqual(Partitions0 - 1, length(Connections1)),
+  %% ensure the producers are stopped
+  ?assertEqual(Partitions0 - 1, length(ets:tab2list(Name))),
+  %% cleanup
+  ok = wolff:stop_and_delete_supervised_producers(ClientId, Topic, Name),
+  ?assertEqual([], supervisor:which_children(wolff_producers_sup)),
+  ok = wolff:stop_and_delete_supervised_client(ClientId),
+  ?assertEqual([], supervisor:which_children(wolff_client_sup)),
+  ok = application:stop(wolff),
+  ok.
 
 non_existing_topic_test() ->
   ClientId = atom_to_binary(?FUNCTION_NAME),
@@ -302,3 +350,20 @@ kafka_topic_cmd_base(Topic) ->
     "docker exec wolff-kafka-1 /opt/kafka/bin/kafka-topics.sh" ++
     " --zookeeper zookeeper:2181" ++
     " --topic '" ++ Topic ++ "'".
+
+create_topic(Topic, Partitions) ->
+  Cmd = kafka_topic_cmd_base(Topic) ++ " --create --replication-factor 1 --partitions " ++ integer_to_list(Partitions),
+  Result = os:cmd(Cmd),
+  Pattern = "Created topic",
+  ?assert(string:str(Result, Pattern) > 0),
+  ok.
+
+delete_topic(Topic) ->
+  Cmd = kafka_topic_cmd_base(Topic) ++ " --delete",
+  Result = os:cmd(Cmd),
+  case string:str(Result, "does not exist") of
+    I when I > 0 -> ok;
+    _ ->
+      Pattern = "marked for deletion",
+      ?assert(string:str(Result, Pattern) > 0)
+  end.

@@ -53,7 +53,7 @@
 -define(init_producers, init_producers).
 -define(init_producers_delay, 1000).
 -define(not_initialized, not_initialized).
--define(partition_count_refresh_interval_seconds, 300).
+-define(partition_count_refresh_interval_seconds, 60).
 -define(refresh_partition_count, refresh_partition_count).
 
 %% @doc start wolff_producdrs gen_server
@@ -372,32 +372,64 @@ refresh_partition_count(#{ets := ?not_initialized} = St) ->
 refresh_partition_count(#{client_pid := Pid, topic := Topic} = St) ->
   case wolff_client:get_leader_connections(Pid, Topic) of
     {ok, Connections} ->
-      start_new_producers(St, Connections);
+      handle_partition_count_change(St, Connections);
     {error, Reason} ->
       log_warning("failed_to_refresh_partition_count topic:~s, reason: ~p", [Topic, Reason]),
       St
   end.
 
-start_new_producers(#{client_id := ClientId,
-                      topic := Topic,
-                      config := Config,
-                      ets := Ets
-                     } = St, Connections0) ->
+handle_partition_count_change(St, Connections0) ->
+  #{client_id := ClientId,
+    topic := Topic,
+    config := Config,
+    ets := Ets
+    } = St,
   NowCount = length(Connections0),
-  %% process only the newly discovered connections
-  F = fun({Partition, _MaybeConnPid}) -> [] =:= ets:lookup(Ets, Partition) end,
-  Connections = lists:filter(F, Connections0),
-  Workers = start_link_producers(ClientId, Topic, Connections, Config),
-  true = ets:insert(Ets, maps:to_list(Workers)),
   OldCount = partition_cnt(ClientId, Topic),
-  case OldCount < NowCount of
+  case OldCount =:= NowCount of
     true ->
-      log_info("started_producers_for_newly_discovered_partitions ~p", [Workers]),
+      %% no change in partition count, nothing to do
+      ok;
+    false when OldCount < NowCount ->
+      %% this means the topic has been updated with more partitions
+      %% or recreated with more partitions
+      IsNewPartition = fun({Partition, _MaybeConnPid}) -> [] =:= ets:lookup(Ets, Partition) end,
+      Connections = lists:filter(IsNewPartition, Connections0),
+      Workers = start_link_producers(ClientId, Topic, Connections, Config),
+      true = ets:insert(Ets, maps:to_list(Workers)),
+      log_info("start_producers_for_newly_discovered_partitions topic: ~s, workers: ~p", [Topic, Workers]),
       ok = put_partition_cnt(ClientId, Topic, NowCount);
     false ->
-      ok
+      %% this means the topic has been deleted then recreated
+      %% because Kafka doesn't support topic downscaling, hence error level log for more visibility
+      LostPartitions = lists:seq(NowCount, OldCount),
+      log_error("stop_producers_for_lost_partitions topic: ~s, lost partitions: ~p", [Topic, LostPartitions]),
+      lists:foreach(fun(Partition) ->
+        case ets:lookup(Ets, Partition) of
+          [{_, Pid}] when is_pid(Pid) ->
+            stop_producer(Topic, Partition, Pid);
+          _ ->
+            ok
+        end,
+        ets:delete(Ets, Partition)
+       end, LostPartitions),
+      ok = put_partition_cnt(ClientId, Topic, NowCount)
   end,
   St.
+
+stop_producer(Topic, Partition, Pid) ->
+  exit(Pid, shutdown),
+  receive
+    {'EXIT', Pid, _Reason} ->
+      ok
+  after 1000 ->
+    log_error("force_kill_producer topic: ~s, partition: ~p, pid: ~p", [Topic, Partition, Pid]),
+    exit(Pid, kill),
+    receive
+      {'EXIT', Pid, _Reason} ->
+        ok
+    end
+  end.
 
 partition_cnt(ClientId, Topic) ->
   persistent_term:get({?MODULE, ClientId, Topic}).
