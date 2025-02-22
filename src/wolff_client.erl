@@ -173,6 +173,8 @@ handle_cast({recv_leader_connection, Topic, Partition, Caller}, St0) ->
         {_, Pid} ->
           Pid;
         false ->
+          %% this happens as a race between metadata refresh and partition producer shutdown
+          %% partition producer will be shutdown by wolff_producers after metadata refresh is complete
           partition_missing_in_metadata_response
       end,
       _ = erlang:send(Caller, ?leader_connection(MaybePid)),
