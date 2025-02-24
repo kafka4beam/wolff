@@ -1,3 +1,15 @@
+* 4.0.7 (merge 1.5.15)
+  - Upgrade to `kafka_protocol-4.2.2`
+    - Support `zstd` compression.
+    - Avoid `kpro_connection` crash log when socket error (terminates with `{shutdown, ErrorReason}`).
+  - Handle topic recreation with fewer partitions.
+    Previously, Wolff only handled topic alteration with more partitions, but not topic re-creation with fewer partitions.
+    Now deleted partition producers will be gracefully shut down once new metadata is fetched, and the buffered messages will be dropped.
+    NOTE: As before, topic deletion (unknown_topic_or_partition) does not cause all partition producers to shut down.
+  - Improve logging for leader connection down reason.
+    Previously, if the connection is closed immediately after connected, the producer process may not get the chance to monitor the pid to get its exit reason.
+    Now wolff_client handles the 'EXIT' signal and keep it for future logging purpose.
+
 * 4.0.6
   - Use more aggressive buffer overflow mode when using memory mode buffer and the system memory usage is high, to reduce risk of OOM.
   - Upgrade replayq from 0.3.10 to 0.3.12.
