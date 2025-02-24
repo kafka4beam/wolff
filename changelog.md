@@ -1,4 +1,5 @@
 * 1.5.15
+  - Upgrade `kafka_protocol` to 2.3.6.6
   - Handle topic recreation with fewer partitions.
     Previously, Wolff only handled topic alteration with more partitions, but not topic re-creation with fewer partitions.
     Now deleted partition producers will be gracefully shut down once new metadata is fetched, and the buffered messages will be dropped.
