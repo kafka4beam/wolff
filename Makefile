@@ -1,4 +1,4 @@
-all: eunit cover
+all: eunit ct cover
 
 .PHONY: compile
 compile: deps
@@ -17,7 +17,7 @@ dialyzer: compile
 	@rebar3 dialyzer
 
 .PHONY: ct
-eunit:
+ct:
 	@rebar3 ct -v -c
 
 .PHONY: eunit
