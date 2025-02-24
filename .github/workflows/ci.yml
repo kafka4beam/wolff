@@ -43,7 +43,7 @@ jobs:
       with:
         version-type: strict
         otp-version: ${{matrix.otp}}
-        rebar3-version: '3.20.0'
+        rebar3-version: '3.24.0'
 
     # Compile
     - name: Compile
