@@ -1,4 +1,6 @@
--module(wolff_dynamic_topics_tests).
+-module(wolff_dynamic_topics_SUITE).
+
+-compile([export_all, nowarn_export_all]).
 
 -include("wolff.hrl").
 -include_lib("eunit/include/eunit.hrl").
@@ -6,9 +8,20 @@
 -define(KEY, key(?FUNCTION_NAME)).
 -define(HOSTS, [{"localhost", 9092}]).
 
-dynamic_topics_test() ->
-  _ = application:stop(wolff), %% ensure stopped
-  {ok, _} = application:ensure_all_started(wolff),
+all() ->
+  Exports = ?MODULE:module_info(exports),
+  [F || {F, _} <- Exports, lists:prefix("t_", atom_to_list(F))].
+
+init_per_suite(Config) ->
+  _ = application:stop(wolff),
+  application:ensure_all_started(wolff),
+  Config.
+
+end_per_suite(_Config) ->
+  application:stop(wolff),
+  ok.
+
+t_dynamic_topics(_Config) ->
   ClientId = <<"dynamic-topics">>,
   ClientCfg = client_config(),
   {ok, ClientPid} = wolff:ensure_supervised_client(ClientId, ?HOSTS, ClientCfg),
@@ -56,12 +69,9 @@ dynamic_topics_test() ->
                sys:get_state(ClientPid)),
   ?assertEqual([], ets:tab2list(?WOLFF_PRODUCERS_GLOBAL_TABLE)),
   ok = wolff:stop_and_delete_supervised_client(ClientId),
-  ok = application:stop(wolff),
   ok.
 
-ack_cb_interlave_test() ->
-  _ = application:stop(wolff), %% ensure stopped
-  {ok, _} = application:ensure_all_started(wolff),
+t_ack_cb_interleave(_Config) ->
   ClientId = <<"ack_cb_interleave_tes">>,
   ClientCfg = client_config(),
   {ok, _ClientPid} = wolff:ensure_supervised_client(ClientId, ?HOSTS, ClientCfg),
@@ -106,7 +116,6 @@ ack_cb_interlave_test() ->
   ok = assert_producers_state(Producers, [T1]),
   ok = wolff:stop_and_delete_supervised_producers(Producers),
   ok = wolff:stop_and_delete_supervised_client(ClientId),
-  ok = application:stop(wolff),
   ok.
 
 assert_producers_state(_Producers, []) ->
@@ -139,9 +148,7 @@ cast(Producers, Topic, Message) ->
     error(timeout)
   end.
 
-unknown_topic_expire_test() ->
-  _ = application:stop(wolff), %% ensure stopped
-  {ok, _} = application:ensure_all_started(wolff),
+t_unknown_topic_expire(_Config) ->
   ClientId = <<"dynamic-topics">>,
   ClientCfg = client_config(),
   {ok, _ClientPid} = wolff:ensure_supervised_client(ClientId, ?HOSTS, ClientCfg),
@@ -184,18 +191,15 @@ unknown_topic_expire_test() ->
   ok = wolff:stop_and_delete_supervised_producers(Producers),
   ?assertEqual([], ets:tab2list(?WOLFF_PRODUCERS_GLOBAL_TABLE)),
   ok = wolff:stop_and_delete_supervised_client(ClientId),
-  ok = application:stop(wolff),
   ok = delete_topic(Topic).
 
-bad_producers_test() ->
+t_bad_producers(_Config) ->
   Producers = #{group => ?NO_GROUP, client_id => <<"foobar">>, topic => <<"test-topic">>},
   Msg = #{value => <<"v">>},
   ?assertError("cannot_add_topic_to_non_dynamic_producer", wolff:send_sync2(Producers, <<"test-topic">>, [Msg], 1000)),
   ok.
 
-topic_add_remove_test() ->
-  _ = application:stop(wolff), %% ensure stopped
-  {ok, _} = application:ensure_all_started(wolff),
+t_topic_add_remove(_Config) ->
   ClientId = <<"dynamic-topics-add-remove">>,
   ClientCfg = client_config(),
   {ok, ClientPid} = wolff:ensure_supervised_client(ClientId, ?HOSTS, ClientCfg),
@@ -224,12 +228,9 @@ topic_add_remove_test() ->
   ok = wolff:stop_and_delete_supervised_producers(Producers),
   ?assertEqual([], ets:tab2list(?WOLFF_PRODUCERS_GLOBAL_TABLE)),
   ok = wolff:stop_and_delete_supervised_client(ClientId),
-  ok = application:stop(wolff),
   ok.
 
-faile_to_fetch_initial_metadata_test() ->
-  _ = application:stop(wolff), %% ensure stopped
-  {ok, _} = application:ensure_all_started(wolff),
+t_fail_to_fetch_initial_metadata(_Config) ->
   ClientId = <<"dynamic-topics">>,
   ClientCfg = client_config(),
   {ok, _ClientPid} = wolff:ensure_supervised_client(ClientId, ?HOSTS, ClientCfg),
@@ -259,7 +260,6 @@ faile_to_fetch_initial_metadata_test() ->
   ?assertMatch({Partition, Pid} when is_integer(Partition) andalso is_pid(Pid),
                wolff:send2(Producers, <<"test-topic">>, [Msg], AckFun)),
   ok = wolff:stop_and_delete_supervised_client(ClientId),
-  ok = application:stop(wolff),
   meck:unload(wolff_client),
   ok.
 

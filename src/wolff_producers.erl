@@ -30,6 +30,7 @@
 %% tests
 -export([find_producers_by_client_topic/3]).
 -export([find_producer_by_partition/4]).
+-export([get_partition_cnt/3]).
 
 -export_type([producers/0]).
 -export_type([id/0, config/0, partitioner/0, max_partitions/0, gname/0]).
@@ -89,7 +90,7 @@
 -define(reinit_tref, reinit_terf).
 -define(not_initialized(Attempts, Reason), {not_initialized, Attempts, Reason}).
 -define(initialized, initialized).
--define(partition_count_refresh_interval_seconds, 300).
+-define(partition_count_refresh_interval_seconds, 60).
 -define(refresh_partition_count, refresh_partition_count).
 -define(partition_count_unavailable, -1).
 -define(no_timer, no_timer).
@@ -413,6 +414,13 @@ handle_info({'EXIT', Pid, Reason},
               client_pid := ClientPid,
               config := Config
              } = St) ->
+  IsCrash = case Reason of
+              normal -> false;
+              shutdown -> false;
+              {shutdown, _} -> false;
+              _ -> true
+            end,
+  Group = get_group(Config),
   case find_topic_partition_by_pid(Pid) of
     [] ->
       %% this should not happen, hence error level
@@ -420,8 +428,7 @@ handle_info({'EXIT', Pid, Reason},
                 #{pid => Pid,
                   reason => Reason,
                   producer_id => producer_id(St)});
-    [{Topic, Partition}] ->
-      Group = get_group(Config),
+    [{Topic, Partition}] when IsCrash ->
       case is_alive(ClientPid) of
         true ->
           %% wolff_producer is not designed to crash & restart
@@ -436,7 +443,9 @@ handle_info({'EXIT', Pid, Reason},
         false ->
           %% no client, restart will be triggered when client connection is back.
           insert_producers(ClientId, Group, Topic, #{Partition => ?down(Reason)})
-      end
+      end;
+    [{Topic, Partition}] ->
+      delete_producer(ClientId, Group, Topic, Partition)
   end,
   {noreply, St};
 handle_info(Info, St) ->
@@ -659,6 +668,12 @@ find_topic_partition_by_pid(Pid) ->
   Ms = ets:fun2ms(fun({{_NS, Topic, Partition}, P}) when P =:= Pid -> {Topic, Partition} end),
   ets:select(?WOLFF_PRODUCERS_GLOBAL_TABLE, Ms).
 
+delete_producer(ClientId, Group, Topic, Partition) ->
+  NS = resolve_ns(ClientId, Group),
+  Key = {NS, Topic, Partition},
+  _ = ets:delete(?WOLFF_PRODUCERS_GLOBAL_TABLE, Key),
+  ok.
+
 insert_producers(ClientId, Group, Topic, Workers0) ->
   NS = resolve_ns(ClientId, Group),
   Workers = lists:map(fun({Partition, Pid}) -> {{NS, Topic, Partition}, Pid} end, maps:to_list(Workers0)),
@@ -698,37 +713,51 @@ refresh_partition_count(#{client_pid := Pid, config := Config} = St, [{Topic, ?i
   MaxPartitions = maps:get(max_partitions, Config, ?all_partitions),
   case wolff_client:get_leader_connections(Pid, Group, Topic, MaxPartitions) of
     {ok, Connections} ->
-      start_new_producers(St, Topic, Connections);
+      handle_partition_count_change(St, Topic, Connections);
     {error, Reason} ->
       log_warning("failed_to_refresh_partition_count_will_retry",
                   #{topic => Topic, group => Group, reason => Reason})
   end,
   refresh_partition_count(St, More).
 
-start_new_producers(#{client_id := ClientId,
-                      config := Config
-                     } = St, Topic, Connections0) ->
+handle_partition_count_change(St, Topic, Connections0) ->
+  #{client_id := ClientId,
+    config := Config
+  } = St,
   Group = get_group(Config),
   NowCount = length(Connections0),
+  OldPartitions =
+    lists:map(fun({P, _}) -> P end,
+              find_producers_by_client_topic(ClientId, Group, Topic)),
+  OldCount = length(OldPartitions),
   %% process only the newly discovered connections
-  F = fun({Partition, _MaybeConnPid} = New, {OldCnt, NewAcc}) ->
+  F = fun({Partition, _Pid} = New, Acc) ->
         case find_producer_by_partition(ClientId, Group, Topic, Partition) of
           {ok, _} ->
-            {OldCnt + 1, NewAcc};
+            Acc;
           {error, #{reason := producer_not_found}} ->
-            {OldCnt, [New | NewAcc]}
+            [New | Acc]
         end
       end,
-  {OldCount, Connections} = lists:foldl(F, {0, []}, Connections0),
-  Workers = start_link_producers(ClientId, Topic, Connections, Config),
+  AddConnections = lists:foldl(F, [], Connections0),
+  Workers = start_link_producers(ClientId, Topic, AddConnections, Config),
   ok = insert_producers(ClientId, Group, Topic, Workers),
   case NowCount - OldCount of
+    0 ->
+      %% Same number of partitions
+      ok;
     Diff when Diff > 0 ->
-      log_info("started_producers_for_newly_discovered_partitions",
+      log_info("start_producers_for_newly_discovered_partitions",
                #{diff => Diff, total => NowCount, producer_id => producer_id(St)}),
       ok = put_partition_cnt(ClientId, Group, Topic, NowCount);
-    _ ->
-      ok
+    _Diff ->
+      %% This means the topic has been deleted then recreated,
+      %% because Kafka doesn't support topic downscaling, hence error level log for more visibility
+      LostPartitions = lists:seq(NowCount, OldCount - 1),
+      log_error("stop_producers_for_lost_partitions",
+                #{partitions => LostPartitions, producer_id => producer_id(St)}),
+      stop_producers(St, ClientId, Group, Topic, LostPartitions),
+      ok = put_partition_cnt(ClientId, Group, Topic, NowCount)
   end.
 
 -if(?OTP_RELEASE >= 26).
@@ -749,6 +778,41 @@ get_partition_cnt(ClientId, Group, Topic) ->
   ets_lookup_val(?WOLFF_PRODUCERS_GLOBAL_TABLE,
                  {NS, Topic, partition_count},
                  ?partition_count_unavailable).
+
+
+stop_producers(_St, _ClientId, _Group, _Topic, []) ->
+  ok;
+stop_producers(St, ClientId, Group, Topic, [Partition | Partitions]) ->
+  case find_producer_by_partition(ClientId, Group, Topic, Partition) of
+    {ok, Pid} ->
+      stop_producer(St, Topic, Partition, Pid);
+    {error, _} ->
+      ok
+  end,
+  stop_producers(St, ClientId, Group, Topic, Partitions).
+
+stop_producer(#{client_id := ClientId} = St, Topic, Partition, Pid) when is_pid(Pid) ->
+  Mref = monitor(process, Pid),
+  ok = wolff_producer:notify_stop(Pid, shutdown),
+  receive
+    {'DOWN', Mref, process, Pid, _Reason} ->
+      ok
+  after 1000 ->
+    log_error("force_kill_producer",
+              #{client_id => ClientId,
+                topic => Topic,
+                partition => Partition,
+                proc => Pid,
+                producer_id => producer_id(St)
+               }),
+    exit(Pid, kill),
+    receive
+      {'DOWN', Mref, process, Pid, _Reason} ->
+        ok
+    end
+  end;
+stop_producer(_, _, _, _) ->
+  ok.
 
 put_partition_cnt(ClientId, Group, Topic, Count) ->
   NS = resolve_ns(ClientId, Group),

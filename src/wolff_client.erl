@@ -194,6 +194,8 @@ handle_call(check_connectivity, _From, St0) ->
 handle_call(Call, _From, St) ->
   {reply, {error, {unknown_call, Call}}, St}.
 
+handle_info({'EXIT', Pid, Reason}, St) ->
+  {noreply, flush_exit_signals(St, Pid, Reason)};
 handle_info(_Info, St) ->
   {noreply, upgrade(St)}.
 
@@ -201,11 +203,25 @@ handle_cast(Cast, #{connect := _Fun} = St) ->
     handle_cast(Cast, upgrade(St));
 handle_cast({recv_leader_connection, Group, Topic, Partition, Caller, MaxConnections}, St0) ->
   case ensure_leader_connections(St0, Group, Topic, MaxConnections) of
-    {ok, St} ->
+    {ok, St1} ->
+      %% in case the connection is down right after connected
+      %% e.g. api query error, authentication error
+      %% we try the best to return the error immediately.
+      %% This however does not eliminate race condition completely, if EXIT happens
+      %% after the leader connections are sent, but before the caller (wolff_producer)
+      %% can monitor the pid, the 'EXIT' signal will be handled in handle_info.
+      %% menaing wolff_producer will get noproc as DOWN reason for the first attempt
+      %% then get the real EXIT reason in the retry attempts
+      St = flush_exit_signals(St1),
       Partitions = do_get_leader_connections(St, Group, Topic),
-      %% the Partition in argument is a result of ensure_leader_connections
-      %% so here the lists:keyfind must succeeded, otherwise a bug
-      {_, MaybePid} = lists:keyfind(Partition, 1, Partitions),
+      MaybePid = case lists:keyfind(Partition, 1, Partitions) of
+        {_, Pid} ->
+          Pid;
+        false ->
+          %% this happens as a race between metadata refresh and partition producer shutdown
+          %% partition producer will be shutdown by wolff_producers after metadata refresh is complete
+          partition_missing_in_metadata_response
+      end,
       _ = erlang:send(Caller, ?leader_connection(MaybePid)),
       {noreply, St};
     {error, Reason} ->
@@ -284,6 +300,28 @@ close_connections(Conns, Topic) ->
              false
          end,
   do_close_connections(maps:to_list(Conns), Pred, #{}).
+
+flush_exit_signals(St0) ->
+  receive
+    {'EXIT', Pid, Reason} ->
+      flush_exit_signals(St0, Pid, Reason)
+  after
+    0 ->
+      St0
+  end.
+
+%% Keep the connection process EXIT reason in the state.
+%% If the pid is not found in the conns map, it's a no-op.
+%% For example, the metadata connection is not in the conns map.
+flush_exit_signals(#{conns := Conns0} = St0, Pid, Reason) ->
+  Conns = maps:to_list(Conns0),
+  St = case lists:keyfind(Pid, 2, Conns) of
+    false ->
+      St0;
+    {ConnId, Pid} ->
+      St0#{conns => maps:put(ConnId, Reason, Conns0)}
+  end,
+  flush_exit_signals(St).
 
 close_connections(Conns) ->
   _ = do_close_connections(maps:to_list(Conns), fun(_) -> true end, #{}),
@@ -386,10 +424,18 @@ ensure_leader_connections2(#{conn_config := ConnConfig,
           {ok, state()}.
 ensure_leader_connections3(#{metadata_ts := MetadataTs} = St0, Group, Topic,
                            ConnPid, Brokers, PartitionMetaList0, MaxPartitions) ->
+  OldPartitions = lists:map(fun({P, _}) -> P end, do_get_leader_connections(St0, Group, Topic)),
   PartitionMetaList = limit_partitions_count(PartitionMetaList0, MaxPartitions),
-  St = lists:foldl(fun(PartitionMeta, StIn) ->
+  NewPartitions = lists:map(fun(PartitionMeta) ->
+                                kpro:find(partition_index, PartitionMeta)
+                            end, PartitionMetaList),
+  DeletedPartitions = lists:subtract(OldPartitions, NewPartitions),
+  St1 = lists:foldl(fun(PartitionMeta, StIn) ->
                        ensure_leader_connection(StIn, Brokers, Group, Topic, PartitionMeta)
                    end, St0, PartitionMetaList),
+  St = lists:foldl(fun(Partition, StIn) ->
+                      maybe_disconnect_old_leader(StIn, Topic, Partition, partition_missing_in_metadata_response)
+                  end, St1, DeletedPartitions),
   {ok, St#{metadata_ts := MetadataTs#{Topic => erlang:timestamp()},
            metadata_conn => ConnPid
           }}.
@@ -432,9 +478,9 @@ do_ensure_leader_connection(#{conn_config := ConnConfig,
       {needs_reconnect, OldConn} ->
         %% delegate to a process to speed up
         ok = close_connection(OldConn),
-        add_conn(do_connect(Host, ConnConfig), ConnId, Connections0);
+        update_conn(do_connect(Host, ConnConfig), ConnId, Connections0);
       false ->
-        add_conn(do_connect(Host, ConnConfig), ConnId, Connections0)
+        update_conn(do_connect(Host, ConnConfig), ConnId, Connections0)
     end,
   Leaders0 = maps:get(leaders, St0, #{}),
   St = ensure_group_is_recorded(St0#{conns := Connections}, Group, Topic),
@@ -464,7 +510,7 @@ maybe_disconnect_old_leader(#{conns := Connections} = St, Topic, PartitionNum, E
       ConnId = {Topic, PartitionNum},
       MaybePid = maps:get(ConnId, Connections, false),
       is_pid(MaybePid) andalso close_connection(MaybePid),
-      St#{conns := add_conn({error, ErrorCode}, ConnId, Connections)};
+      St#{conns := update_conn({error, ErrorCode}, ConnId, Connections)};
     _ ->
       %% the connection is shared by producers (for different topics)
       %% so we do not close the connection here.
@@ -472,7 +518,11 @@ maybe_disconnect_old_leader(#{conns := Connections} = St, Topic, PartitionNum, E
       %% (due to the error code returned) there is no way to know which
       %% connection to close anyway.
       Leaders0 = maps:get(leaders, St, #{}),
-      Leaders = Leaders0#{{Topic, PartitionNum} => ErrorCode},
+      Leaders = case ErrorCode of
+                  partition_missing_in_metadata_response ->
+                    maps:remove({Topic, PartitionNum}, Leaders0);
+                  _ -> Leaders0#{{Topic, PartitionNum} => ErrorCode}
+                end,
       St#{leaders => Leaders}
   end.
 
@@ -505,12 +555,14 @@ is_connected(MaybePid, {Host, Port}) ->
 
 is_alive(Pid) -> is_pid(Pid) andalso erlang:is_process_alive(Pid).
 
-add_conn({ok, Pid}, ConnId, Conns) ->
-    true = is_pid(Pid), %% assert
-    Conns#{ConnId => Pid};
-add_conn({error, Reason}, ConnId, Conns) ->
-    false = is_pid(Reason), %% assert
-    Conns#{ConnId => Reason}.
+update_conn({ok, Pid}, ConnId, Conns) ->
+  true = is_pid(Pid), %% assert
+  Conns#{ConnId => Pid};
+update_conn({error, partition_missing_in_metadata_response}, ConnId, Conns) ->
+  maps:remove(ConnId, Conns);
+update_conn({error, Reason}, ConnId, Conns) ->
+  false = is_pid(Reason), %% assert
+  Conns#{ConnId => Reason}.
 
 split_config(Config) ->
   ConnCfgKeys = kpro_connection:all_cfg_keys(),

@@ -201,7 +201,7 @@ wants to use.
 Start Kafka in docker containers from dokcer-compose.yml in this repo.
 
 ```
-docker-compose up -d
+docker compose up -d
 ```
 
 ## License

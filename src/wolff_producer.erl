@@ -20,7 +20,7 @@
 -define(MIN_DISCARD_LOG_INTERVAL, 5000).
 
 %% APIs
--export([start_link/5, stop/1, send/3, send/4, send_sync/3]).
+-export([start_link/5, stop/1, notify_stop/2, send/3, send/4, send_sync/3]).
 
 %% gen_server callbacks
 -export([code_change/3, handle_call/3, handle_cast/2, handle_info/2, init/1, terminate/2]).
@@ -164,6 +164,9 @@ start_link(ClientId, Topic, Partition, MaybeConnPid, Config) ->
 
 stop(Pid) ->
   gen_server:stop(Pid).
+
+notify_stop(Pid, Reason) ->
+  gen_server:cast(Pid, {stop, Reason}).
 
 %% @equiv send(Pid, Batch, AckFun, wait_for_queued)
 -spec send(pid(), [wolff:msg()], wolff:ack_fun()) -> ok.
@@ -340,9 +343,6 @@ handle_info(?leader_connection(Conn), #{topic := Topic,
 handle_info(?leader_connection(?conn_down(Reason)), St0) ->
   St = mark_connection_down(St0#{reconnect_timer => ?no_timer}, Reason),
   {noreply, St};
-handle_info(?leader_connection(?conn_error(Reason)), St0) ->
-  St = mark_connection_down(St0#{reconnect_timer => ?no_timer}, Reason),
-  {noreply, St};
 handle_info(?reconnect, St0) ->
   St = St0#{reconnect_timer => ?no_timer},
   {noreply, ensure_delayed_reconnect(St, normal_delay)};
@@ -357,6 +357,8 @@ handle_info({'EXIT', _, Reason}, St) ->
 handle_info(_Info, St) ->
   {noreply, St}.
 
+handle_cast({stop, Reason}, St) ->
+  {stop, Reason, St};
 handle_cast(_Cast, St) ->
   {noreply, St}.
 

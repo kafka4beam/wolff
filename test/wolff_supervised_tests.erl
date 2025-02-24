@@ -6,6 +6,7 @@
 
 -define(KEY, key(?FUNCTION_NAME)).
 -define(HOSTS, [{"localhost", 9092}]).
+-define(RETRY(Interval, Times, Expr), retry(Interval, Times, fun() -> Expr end)).
 
 supervised_client_test() ->
   CntrEventsTable = ets:new(cntr_events, [public]),
@@ -288,11 +289,11 @@ stop_with_name_test() ->
   ok = application:stop(wolff),
   ok.
 
-partition_count_refresh_test_() ->
+partition_count_increase_test_() ->
   {timeout, 30, %% it takes time to alter topic via cli in docker container
-   fun test_partition_count_refresh/0}.
+   fun test_partition_count_increase/0}.
 
-test_partition_count_refresh() ->
+test_partition_count_increase() ->
   CntrEventsTable = ets:new(cntr_events, [public]),
   wolff_tests:install_event_logging(?FUNCTION_NAME, CntrEventsTable, false),
   ClientId = <<"test-add-more-partitions">>,
@@ -324,6 +325,54 @@ test_partition_count_refresh() ->
   timer:sleep(timer:seconds(IntervalSeconds * 2)),
   {Partition1, _} = wolff:send_sync(Producers, [Msg], 3000),
   ?assertEqual(Partitions0, Partition1),
+  [1,1] = get_telemetry_seq(CntrEventsTable, [wolff,success]),
+  assert_last_event_is_zero(queuing, CntrEventsTable),
+  assert_last_event_is_zero(queuing_bytes, CntrEventsTable),
+  assert_last_event_is_zero(inflight, CntrEventsTable),
+  ets:delete(CntrEventsTable),
+  wolff_tests:deinstall_event_logging(?FUNCTION_NAME),
+  ok.
+
+partition_count_decrease_test_() ->
+  {timeout, 30, %% it takes time to alter topic via cli in docker container
+   fun test_partition_count_decrease/0}.
+
+test_partition_count_decrease() ->
+  CntrEventsTable = ets:new(cntr_events, [public]),
+  wolff_tests:install_event_logging(?FUNCTION_NAME, CntrEventsTable, false),
+  ClientId = <<"recreate-topic-with-fewer-partitions">>,
+  Topic = <<"test-topic-fewer-partition">>,
+  Partitions0 = 3,
+  delete_topic(Topic),
+  create_topic(Topic, Partitions0),
+  _ = application:stop(wolff), %% ensure stopped
+  {ok, _} = application:ensure_all_started(wolff),
+  ClientCfg = #{},
+  {ok, ClientPid} = wolff:ensure_supervised_client(ClientId, ?HOSTS, ClientCfg),
+  {ok, Connections0} = get_leader_connections(ClientPid, Topic),
+  ?assertEqual(Partitions0, length(Connections0)),
+  ?assertEqual(Partitions0, count_partitions(Topic)),
+  %% always send to the last partition
+  Partitioner = fun(Count, _) -> Count - 1 end,
+  Name = ?FUNCTION_NAME,
+  IntervalSeconds = 1,
+  ProducerCfg = #{required_acks => all_isr,
+                  partitioner => Partitioner,
+                  reconnect_delay_ms => 0,
+                  name => Name,
+                  partition_count_refresh_interval_seconds => IntervalSeconds
+                 },
+  {ok, Producers} = wolff:ensure_supervised_producers(ClientId, Topic, ProducerCfg),
+  Msg = #{key => ?KEY, value => <<"value">>},
+  {Partition0, _} = wolff:send_sync(Producers, [Msg], 3000),
+  ?assertEqual(Partitions0 - 1, Partition0),
+  %% re-create topic with fewer partitions
+  delete_topic(Topic),
+  create_topic(Topic, Partitions0 - 1),
+  ?RETRY(1000, 5, ?assertEqual(Partitions0 - 1, count_partitions(Topic))),
+  ?RETRY(1000, 5, ?assertEqual(Partitions0 - 1, wolff_producers:get_partition_cnt(ClientId, ?NO_GROUP, Topic))),
+  {Partition1, _} = wolff:send_sync(Producers, [Msg], 10000),
+  ?assertEqual(Partitions0 - 2, Partition1),
   [1,1] = get_telemetry_seq(CntrEventsTable, [wolff,success]),
   assert_last_event_is_zero(queuing, CntrEventsTable),
   assert_last_event_is_zero(queuing_bytes, CntrEventsTable),
@@ -573,3 +622,31 @@ assert_last_event_is_zero(Key, Tab) ->
 
 get_leader_connections(Client, Topic) ->
     wolff_client:get_leader_connections(Client, ?NO_GROUP, Topic).
+
+create_topic(Topic, Partitions) ->
+  Cmd = kafka_topic_cmd_base(Topic) ++ " --create --replication-factor 1 --partitions " ++ integer_to_list(Partitions),
+  Result = os:cmd(Cmd),
+  Pattern = "Created topic",
+  ?assert(string:str(Result, Pattern) > 0),
+  ok.
+
+delete_topic(Topic) ->
+  Cmd = kafka_topic_cmd_base(Topic) ++ " --delete",
+  Result = os:cmd(Cmd),
+  case string:str(Result, "does not exist") of
+    I when I > 0 -> ok;
+    _ ->
+      Pattern = "marked for deletion",
+      ?assert(string:str(Result, Pattern) > 0)
+  end.
+
+retry(_Interval, 0, Fn) ->
+    Fn();
+retry(Interval, Times, Fn) ->
+    try
+        Fn()
+    catch
+        _:_ ->
+            timer:sleep(Interval),
+            retry(Interval, Times, Fn)
+    end.
