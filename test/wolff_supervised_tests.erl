@@ -223,15 +223,21 @@ test_partition_count_decrease() ->
   {ok, ClientPid} = wolff:ensure_supervised_client(ClientId, ?HOSTS, ClientCfg),
   {ok, Connections0} = wolff_client:get_leader_connections(ClientPid, Topic),
   ?assertEqual(Partitions0, length(Connections0)),
+  Partitioner = fun(Count, _) -> Count - 1 end,
   IntervalSeconds = 1,
   Name = ?FUNCTION_NAME,
   ProducerCfg = #{required_acks => all_isr,
+                  partitioner => Partitioner,
                   reconnect_delay_ms => 0,
                   name => Name,
                   partition_count_refresh_interval_seconds => IntervalSeconds
                  },
-  {ok, _Producers} = wolff:ensure_supervised_producers(ClientId, Topic, ProducerCfg),
+  {ok, Producers} = wolff:ensure_supervised_producers(ClientId, Topic, ProducerCfg),
   ?assertEqual(Partitions0, length(ets:tab2list(Name))),
+  Msg = #{key => ?KEY, value => <<"value">>},
+  {Partition0, _} = wolff:send_sync(Producers, [Msg], 3000),
+  ?assertEqual(Partitions0 - 1, Partition0),
+
   %% delete the topic
   delete_topic(Topic),
   io:format(user, "topic deleted\n", []),
@@ -244,6 +250,8 @@ test_partition_count_decrease() ->
   ?assertEqual(Partitions0 - 1, length(Connections1)),
   %% ensure the producers are stopped
   ?assertEqual(Partitions0 - 1, length(ets:tab2list(Name))),
+  {Partition1, _} = wolff:send_sync(Producers, [Msg], 3000),
+  ?assertEqual(Partition0 - 1, Partition1),
   %% cleanup
   ok = wolff:stop_and_delete_supervised_producers(ClientId, Topic, Name),
   ?assertEqual([], supervisor:which_children(wolff_producers_sup)),
