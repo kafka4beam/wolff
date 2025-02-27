@@ -1,3 +1,6 @@
+* 4.0.8
+  - Upgrade to `kafka_protocol-4.2.3` for crc32c performance improvements
+
 * 4.0.7 (merge 1.5.15)
   - Upgrade to `kafka_protocol-4.2.2`
     - Support `zstd` compression.
