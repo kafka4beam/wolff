@@ -238,12 +238,25 @@ test_partition_count_decrease() ->
   {Partition0, _} = wolff:send_sync(Producers, [Msg], 3000),
   ?assertEqual(Partitions0 - 1, Partition0),
 
+  Self = self(),
+  AsyncSends = lists:seq(1, 10),
   %% delete the topic
   delete_topic(Topic),
-  io:format(user, "topic deleted\n", []),
+  AckFn = fun(Partition, OffsetReply) -> Self ! {async_ack, Partition, OffsetReply}, ok end,
+  lists:foreach(fun(_) -> wolff:send(Producers, [Msg], AckFn) end, AsyncSends),
   %% wait for the topic to be deleted
   create_topic(Topic, Partitions0 - 1),
-  io:format(user, "created topic with ~p partitions\n", [Partitions0 - 1]),
+  lists:foreach(
+    fun(_) ->
+      receive
+        {async_ack, P, O} ->
+          ?assertEqual(Partitions0 - 1, P),
+          ?assertEqual(O, partition_lost)
+      after
+        5000 ->
+          error(timeout)
+      end
+    end, AsyncSends),
   %% wait for the topic to be recreated
   timer:sleep(timer:seconds(IntervalSeconds * 4)),
   {ok, Connections1} = wolff_client:get_leader_connections(ClientPid, Topic),
@@ -259,6 +272,68 @@ test_partition_count_decrease() ->
   ?assertEqual([], supervisor:which_children(wolff_client_sup)),
   ok = application:stop(wolff),
   ok.
+
+test_topic_recreate_test_() ->
+  {timeout, 30, %% it takes time to alter topic via cli in docker container
+   fun test_topic_recreate/0}.
+
+test_topic_recreate() ->
+  ClientId = <<"test-topic-recreate">>,
+  Topic = <<"test-topic-recreate">>,
+  %% ensure the topic does not exist
+  delete_topic(Topic),
+  Partitions0 = 3,
+  create_topic(Topic, Partitions0),
+  _ = application:stop(wolff), %% ensure stopped
+  {ok, _} = application:ensure_all_started(wolff),
+  ClientCfg = #{min_metadata_refresh_interval => 0},
+  {ok, ClientPid} = wolff:ensure_supervised_client(ClientId, ?HOSTS, ClientCfg),
+  {ok, Connections0} = wolff_client:get_leader_connections(ClientPid, Topic),
+  ?assertEqual(Partitions0, length(Connections0)),
+  Partitioner = fun(_Count, _Key) -> 0 end,
+  IntervalSeconds = 1,
+  Name = ?FUNCTION_NAME,
+  ProducerCfg = #{required_acks => all_isr,
+                  partitioner => Partitioner,
+                  reconnect_delay_ms => 0,
+                  name => Name,
+                  partition_count_refresh_interval_seconds => IntervalSeconds
+                 },
+  {ok, Producers} = wolff:ensure_supervised_producers(ClientId, Topic, ProducerCfg),
+  ?assertEqual(Partitions0, length(ets:tab2list(Name))),
+  Msg = #{key => ?KEY, value => <<"value">>},
+  ?assertEqual({0, 0}, wolff:send_sync(Producers, [Msg], 3000)),
+  %% delete the topic
+  delete_topic(Topic),
+  Self = self(),
+  %% Send a message while the topic is deleted
+  AckFn = fun(Partition, OffsetReply) -> Self ! {async_ack, Partition, OffsetReply}, ok end,
+  {0, _} = wolff:send(Producers, [Msg], AckFn),
+  %% wait for the topic to be deleted
+  create_topic(Topic, Partitions0 - 1),
+  %% wait for the topic to be recreated
+  timer:sleep(timer:seconds(IntervalSeconds * 4)),
+  {ok, Connections1} = wolff_client:get_leader_connections(ClientPid, Topic),
+  ?assertEqual(Partitions0 - 1, length(Connections1)),
+  %% ensure the producers are stopped
+  ?assertEqual(Partitions0 - 1, length(ets:tab2list(Name))),
+  ?assertEqual({0, 1}, wolff:send_sync(Producers, [Msg], 3000)),
+  receive
+    {async_ack, P, O} ->
+      ?assertEqual(0, P),
+      ?assertEqual(0, O)
+  after
+    1000 ->
+      error(timeout)
+  end,
+  %% cleanup
+  ok = wolff:stop_and_delete_supervised_producers(ClientId, Topic, Name),
+  ?assertEqual([], supervisor:which_children(wolff_producers_sup)),
+  ok = wolff:stop_and_delete_supervised_client(ClientId),
+  ?assertEqual([], supervisor:which_children(wolff_client_sup)),
+  ok = application:stop(wolff),
+  ok.
+
 
 non_existing_topic_test() ->
   ClientId = atom_to_binary(?FUNCTION_NAME),

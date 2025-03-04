@@ -11,27 +11,27 @@ jobs:
       fail-fast: false
       matrix:
         otp:
-          - '25'
-          - '24'
+          - '25.3'
+          - '24.3'
         kafka:
           - '2.4'
           - '1.1'
           - '0.11'
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     steps:
 
     # Setup
     - name: Checkout
-      uses: actions/checkout@v2
+      uses: actions/checkout@v4
     - name: Cache Hex packages
-      uses: actions/cache@v2
+      uses: actions/cache@v4
       with:
         path: ~/.cache/rebar3/hex/hexpm/packages
         key: ${{ runner.os }}-hex-${{ hashFiles(format('{0}{1}', github.workspace, '/rebar.lock')) }}
         restore-keys: |
           ${{ runner.os }}-hex-
     - name: Cache Dialyzer PLTs
-      uses: actions/cache@v2
+      uses: actions/cache@v4
       with:
         path: ~/.cache/rebar3/rebar3_*_plt
         key: ${{ runner.os }}-dialyzer-${{ hashFiles(format('{0}{1}', github.workspace, '/rebar.config')) }}
@@ -41,7 +41,6 @@ jobs:
     - name: Install Erlang/OTP
       uses: erlef/setup-beam@v1
       with:
-        version-type: strict
         otp-version: ${{matrix.otp}}
         rebar3-version: '3.17.0'
 

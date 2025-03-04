@@ -180,7 +180,7 @@ handle_cast({recv_leader_connection, Topic, Partition, Caller}, St0) ->
       _ = erlang:send(Caller, ?leader_connection(MaybePid)),
       {noreply, St};
     {error, Reason} ->
-      _ = erlang:send(Caller, ?leader_connection({error, Reason})),
+      _ = erlang:send(Caller, ?leader_connection(?conn_down(Reason))),
       {noreply, St0}
   end;
 

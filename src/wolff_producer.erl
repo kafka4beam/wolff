@@ -20,7 +20,7 @@
 -define(MIN_DISCARD_LOG_INTERVAL, 5000).
 
 %% APIs
--export([start_link/5, stop/1, send/3, send_sync/3]).
+-export([start_link/5, stop/1, stop/2, send/3, send_sync/3]).
 
 %% gen_server callbacks
 -export([code_change/3, handle_call/3, handle_cast/2, handle_info/2, init/1, terminate/2]).
@@ -106,6 +106,9 @@ start_link(ClientId, Topic, Partition, MaybeConnPid, Config) ->
   %% the garbage collection can be expensive if using the default 'on_heap' option.
   SpawnOpts = [{spawn_opt, [{message_queue_data, off_heap}]}],
   gen_server:start_link(?MODULE, St, SpawnOpts).
+
+stop(Pid, Reason) ->
+  gen_server:cast(Pid, {stop, Reason}).
 
 stop(Pid) ->
   gen_server:call(Pid, stop, infinity).
@@ -270,6 +273,12 @@ handle_info({'EXIT', _, Reason}, St) ->
 handle_info(_Info, St) ->
   {noreply, St}.
 
+handle_cast({stop, ?partition_lost}, #{replayq := Q} = St) ->
+  NewSt = reply_error_for_all_reqs(St, ?partition_lost),
+  ok = replayq:close_and_purge(Q),
+  {stop, {shutdown, ?partition_lost}, maps:remove(replayq, NewSt)};
+handle_cast({stop, Reason}, St) ->
+  {stop, {shutdown, Reason}, St};
 handle_cast(_Cast, St) ->
   {noreply, St}.
 
@@ -766,6 +775,13 @@ handle_overflow(#{replayq := Q,
   ok = maybe_log_discard(St, length(Calls)),
   NewPendingAcks = evaluate_pending_ack_funs(PendingAcks, Calls, ?buffer_overflow_discarded),
   St#{replayq := NewQ, pending_acks := NewPendingAcks}.
+
+reply_error_for_all_reqs(St, Reason) ->
+  #{pending_acks := PendingAcks} = St,
+  maps:foreach(fun(_CallId, AckCb) ->
+        ok = eval_ack_cb(AckCb, Reason)
+  end, PendingAcks),
+  St#{pending_acks => #{}}.
 
 %% use process dictionary for upgrade without restart
 maybe_log_discard(St, Increment) ->
