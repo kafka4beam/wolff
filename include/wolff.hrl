@@ -5,6 +5,7 @@
 -define(leader_connection(Pid), {leader_connection, Pid}).
 -define(UNKNOWN_OFFSET, -1).
 -define(buffer_overflow_discarded, buffer_overflow_discarded).
+-define(partition_lost, partition_lost).
 
 %% Kafka has default batch size limit 1000012.
 %% Since Kafka 2.4, it has been extended to 1048588.

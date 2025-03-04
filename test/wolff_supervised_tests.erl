@@ -238,12 +238,25 @@ test_partition_count_decrease() ->
   {Partition0, _} = wolff:send_sync(Producers, [Msg], 3000),
   ?assertEqual(Partitions0 - 1, Partition0),
 
+  Self = self(),
+  AsyncSends = lists:seq(1, 10),
   %% delete the topic
   delete_topic(Topic),
-  io:format(user, "topic deleted\n", []),
+  AckFn = fun(Partition, OffsetReply) -> Self ! {async_ack, Partition, OffsetReply}, ok end,
+  lists:foreach(fun(_) -> wolff:send(Producers, [Msg], AckFn) end, AsyncSends),
   %% wait for the topic to be deleted
   create_topic(Topic, Partitions0 - 1),
-  io:format(user, "created topic with ~p partitions\n", [Partitions0 - 1]),
+  lists:foreach(
+    fun(_) ->
+      receive
+        {async_ack, P, O} ->
+          ?assertEqual(Partitions0 - 1, P),
+          ?assertEqual(O, partition_lost)
+      after
+        5000 ->
+          error(timeout)
+      end
+    end, AsyncSends),
   %% wait for the topic to be recreated
   timer:sleep(timer:seconds(IntervalSeconds * 4)),
   {ok, Connections1} = wolff_client:get_leader_connections(ClientPid, Topic),

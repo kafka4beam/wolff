@@ -418,7 +418,7 @@ handle_partition_count_change(St, Connections0) ->
   St.
 
 stop_producer(Topic, Partition, Pid) ->
-  exit(Pid, shutdown),
+  ok = wolff_producer:stop(Pid, ?partition_lost),
   receive
     {'EXIT', Pid, _Reason} ->
       ok
