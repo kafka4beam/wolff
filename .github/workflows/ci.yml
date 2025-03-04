@@ -11,8 +11,8 @@ jobs:
       fail-fast: false
       matrix:
         otp:
-          - '25'
-          - '24'
+          - '25.3'
+          - '24.3'
         kafka:
           - '2.4'
           - '1.1'
@@ -41,7 +41,6 @@ jobs:
     - name: Install Erlang/OTP
       uses: erlef/setup-beam@v1
       with:
-        version-type: strict
         otp-version: ${{matrix.otp}}
         rebar3-version: '3.17.0'
 
