@@ -349,8 +349,8 @@ code_change(_OldVsn, St, _Extra) ->
 terminate(Reason, #{replayq := Q} = St) ->
   case Reason of
     {shutdown, ?partition_lost} ->
-      _ = reply_error_for_all_reqs(St, ?partition_lost),
-      ok = replayq:close_and_purge(Q);
+      ok = replayq:close_and_purge(Q),
+      _ = reply_error_for_all_reqs(St, ?partition_lost);
     _ ->
       ok = replayq:close(Q)
   end,
