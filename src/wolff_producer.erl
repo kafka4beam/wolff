@@ -357,19 +357,25 @@ handle_info({'EXIT', _, Reason}, St) ->
 handle_info(_Info, St) ->
   {noreply, St}.
 
+handle_cast({stop, ?partition_lost}, St) ->
+  {stop, {shutdown, ?partition_lost}, St};
 handle_cast({stop, Reason}, St) ->
-  {stop, Reason, St};
+  {stop, {shutdown, Reason}, St};
 handle_cast(_Cast, St) ->
   {noreply, St}.
 
 code_change(_OldVsn, St, _Extra) ->
   {ok, St}.
 
-terminate(_Reason, #{replayq := Q} = State) ->
-  ok = replayq:close(Q),
-  ok = clear_gauges(State, Q);
-terminate(_Reason, _State) ->
-  ok.
+terminate(Reason, #{replayq := Q} = St) ->
+  case Reason of
+    {shutdown, ?partition_lost} ->
+      _ = reply_error_for_all_reqs(St, ?partition_lost),
+      ok = replayq:close_and_purge(Q);
+    _ ->
+      ok = replayq:close(Q)
+  end,
+  ok = clear_gauges(St, Q).
 
 clear_gauges(#{config := Config}, Q) ->
   wolff_metrics:inflight_set(Config, 0),
@@ -989,6 +995,23 @@ handle_overflow(#{replayq := Q,
   {CbList, NewPendingAcks} = wolff_pendack:drop_backlog(PendingAcks, CallIDs),
   lists:foreach(fun(Cb) -> eval_ack_cb(Cb, ?buffer_overflow_discarded) end, CbList),
   St#{replayq := NewQ, pending_acks := NewPendingAcks}.
+
+reply_error_for_all_reqs(St, Reason) ->
+  #{pending_acks := PendingAcks, config := Config, sent_reqs := SentReqs} = St,
+  F = fun(Cb, Acc) ->
+    eval_ack_cb(Cb, Reason),
+    Acc + 1
+  end,
+  Count = wolff_pendack:fold(PendingAcks, F, 0),
+  AlredyInc = lists:foldl(
+    fun(#{attempts := 1}, Acc) ->
+      %% sent but not yet acked
+      Acc + 1;
+    (_, Acc) ->
+      %% sent and acked with error, the failed count is already incremented
+      Acc
+  end, 0, queue:to_list(SentReqs)),
+  inc_sent_failed(Config, Count - AlredyInc, 1).
 
 %% use process dictionary for upgrade without restart
 maybe_log_discard(St, Increment) ->

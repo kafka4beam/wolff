@@ -793,7 +793,7 @@ stop_producers(St, ClientId, Group, Topic, [Partition | Partitions]) ->
 
 stop_producer(#{client_id := ClientId} = St, Topic, Partition, Pid) when is_pid(Pid) ->
   Mref = monitor(process, Pid),
-  ok = wolff_producer:notify_stop(Pid, shutdown),
+  ok = wolff_producer:notify_stop(Pid, ?partition_lost),
   receive
     {'DOWN', Mref, process, Pid, _Reason} ->
       ok
@@ -805,7 +805,7 @@ stop_producer(#{client_id := ClientId} = St, Topic, Partition, Pid) when is_pid(
                 proc => Pid,
                 producer_id => producer_id(St)
                }),
-    exit(Pid, kill),
+  exit(Pid, kill),
     receive
       {'DOWN', Mref, process, Pid, _Reason} ->
         ok
