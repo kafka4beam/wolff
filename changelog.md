@@ -1,3 +1,6 @@
+* 4.0.9 (merge 1.5.16)
+   - Fix a remaining issue in 4.0.7: the pending acks in lost partitions should be replied to the caller, and the failed counters should be incremented.
+
 * 4.0.8
   - Upgrade to `kafka_protocol-4.2.3` for crc32c performance improvements
 
