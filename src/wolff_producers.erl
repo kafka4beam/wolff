@@ -756,7 +756,10 @@ handle_partition_count_change(St, Topic, Connections0) ->
       LostPartitions = lists:seq(NowCount, OldCount - 1),
       log_error("stop_producers_for_lost_partitions",
                 #{partitions => LostPartitions, producer_id => producer_id(St)}),
-      stop_producers(St, ClientId, Group, Topic, LostPartitions),
+      PartitionProducers = find_producers(St, ClientId, Group, Topic, LostPartitions, []),
+      ProducerId = producer_id(St),
+      lists:foreach(fun(P) -> delete_producer(ClientId, Group, Topic, P) end, LostPartitions),
+      ok = stop_producers(ProducerId, ClientId, Topic, PartitionProducers),
       ok = put_partition_cnt(ClientId, Group, Topic, NowCount)
   end.
 
@@ -780,39 +783,69 @@ get_partition_cnt(ClientId, Group, Topic) ->
                  ?partition_count_unavailable).
 
 
-stop_producers(_St, _ClientId, _Group, _Topic, []) ->
-  ok;
-stop_producers(St, ClientId, Group, Topic, [Partition | Partitions]) ->
-  case find_producer_by_partition(ClientId, Group, Topic, Partition) of
+find_producers(_St, _ClientId, _Group, _Topic, [], Acc) ->
+  Acc;
+find_producers(St, ClientId, Group, Topic, [Partition | Partitions], Acc0) ->
+  Acc = case find_producer_by_partition(ClientId, Group, Topic, Partition) of
     {ok, Pid} ->
-      stop_producer(St, Topic, Partition, Pid);
+      [{Partition, Pid} | Acc0];
     {error, _} ->
-      ok
+      Acc0
   end,
-  stop_producers(St, ClientId, Group, Topic, Partitions).
+  find_producers(St, ClientId, Group, Topic, Partitions, Acc).
 
-stop_producer(#{client_id := ClientId} = St, Topic, Partition, Pid) when is_pid(Pid) ->
+%% Stop partition-producers concurrently.
+%% Wait at most 5s
+stop_producers(ProducerId, ClientId, Topic, PartitionProducers) ->
+  Killers = lists:map(
+    fun({Partition, Pid}) ->
+      ok = unlink_consume_exit(Pid),
+      spawn_link(fun() ->
+        stop_producer(ProducerId, ClientId, Topic, Partition, Pid)
+      end)
+    end, PartitionProducers),
+  ok = collect_exit_signals(Killers).
+
+collect_exit_signals([]) -> ok;
+collect_exit_signals([Pid | Pids]) ->
+  %% all killers wait at most 5s, so there is no 'after' clause here.
+  receive
+    {'EXIT', P, _} when P =:= Pid ->
+      collect_exit_signals(Pids)
+  end.
+
+%% unlink a process and consume the 'EXIT' signal which might
+%% have been sent to the mailbox already
+unlink_consume_exit(Pid) ->
+  _ = unlink(Pid),
+  receive
+    {'EXIT', P, _} when P =:= Pid ->
+      ok
+  after
+    0 ->
+      ok
+  end.
+
+stop_producer(ProducerId, ClientId, Topic, Partition, Pid) ->
   Mref = monitor(process, Pid),
   ok = wolff_producer:notify_stop(Pid, ?partition_lost),
   receive
     {'DOWN', Mref, process, Pid, _Reason} ->
       ok
-  after 1000 ->
+  after 5000 ->
     log_error("force_kill_producer",
               #{client_id => ClientId,
                 topic => Topic,
                 partition => Partition,
                 proc => Pid,
-                producer_id => producer_id(St)
+                producer_id => ProducerId
                }),
-  exit(Pid, kill),
+    exit(Pid, kill),
     receive
       {'DOWN', Mref, process, Pid, _Reason} ->
         ok
     end
-  end;
-stop_producer(_, _, _, _) ->
-  ok.
+  end.
 
 put_partition_cnt(ClientId, Group, Topic, Count) ->
   NS = resolve_ns(ClientId, Group),

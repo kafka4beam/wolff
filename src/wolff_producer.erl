@@ -263,6 +263,7 @@ do_init(#{client_id := ClientId,
               #{partition_id => Partition},
               Config0),
   Config2 = resolve_max_linger_bytes(Config1, Q),
+  %% replayq configs are kept in Q, there is no need to duplicate them
   Config = maps:without([replayq_dir, replayq_seg_bytes], Config2),
   wolff_metrics:queuing_set(Config, replayq:count(Q)),
   wolff_metrics:queuing_bytes_set(Config, replayq:bytes(Q)),
@@ -270,10 +271,8 @@ do_init(#{client_id := ClientId,
   %% The initial connect attempt is made by the caller (wolff_producers.erl)
   %% If succeeded, 'Conn' is a pid (but it may as well be dead by now),
   %% if failed, it's a `term()' to indicate the failure reason.
-  %% Send it to self regardless of failure, retry timer should be started
-  %% when the message is received (same handling as in when `DOWN' message is
-  %% received after a normal start)
-  %% replayq configs are kept in Q, there is no need to duplicate them
+  %% When it's not a pid, retry timer will be started in mark_connection_down
+  %% like when 'DOWN' message is received.
   handle_leader_connection(
     St#{replayq => Q,
         config => Config,
@@ -336,8 +335,6 @@ handle_info({'EXIT', _, Reason}, St) ->
 handle_info(_Info, St) ->
   {noreply, St}.
 
-handle_cast({stop, ?partition_lost}, St) ->
-  {stop, {shutdown, ?partition_lost}, St};
 handle_cast({stop, Reason}, St) ->
   {stop, {shutdown, Reason}, St};
 handle_cast(_Cast, St) ->
@@ -997,7 +994,7 @@ reply_error_for_all_reqs(St, Reason) ->
     Acc + 1
   end,
   Count = wolff_pendack:fold(PendingAcks, F, 0),
-  AlredyInc = lists:foldl(
+  AlreadyInc = lists:foldl(
     fun(#{attempts := 1}, Acc) ->
       %% sent but not yet acked
       Acc + 1;
@@ -1005,7 +1002,7 @@ reply_error_for_all_reqs(St, Reason) ->
       %% sent and acked with error, the failed count is already incremented
       Acc
   end, 0, queue:to_list(SentReqs)),
-  inc_sent_failed(Config, Count - AlredyInc, 1).
+  inc_sent_failed(Config, Count - AlreadyInc, 1).
 
 %% use process dictionary for upgrade without restart
 maybe_log_discard(St, Increment) ->
