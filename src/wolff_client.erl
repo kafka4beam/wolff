@@ -225,7 +225,7 @@ handle_cast({recv_leader_connection, Group, Topic, Partition, Caller, MaxConnect
       _ = erlang:send(Caller, ?leader_connection(MaybePid)),
       {noreply, St};
     {error, Reason} ->
-      _ = erlang:send(Caller, ?leader_connection({error, Reason})),
+      _ = erlang:send(Caller, ?leader_connection(?conn_down(Reason))),
       {noreply, St0}
   end;
 handle_cast({release_leader_conns, Group, Topic}, St0) ->

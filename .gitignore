@@ -20,5 +20,6 @@ _build
 *.iml
 rebar3.crashdump
 test-data/
+test-data-2/
 doc/
 rebar.lock

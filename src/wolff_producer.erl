@@ -23,7 +23,7 @@
 -export([start_link/5, stop/1, notify_stop/2, send/3, send/4, send_sync/3]).
 
 %% gen_server callbacks
--export([code_change/3, handle_call/3, handle_cast/2, handle_info/2, init/1, terminate/2]).
+-export([code_change/3, handle_call/3, handle_cast/2, handle_continue/2, handle_info/2, init/1, terminate/2]).
 
 %% replayq callbacks
 -export([queue_item_sizer/1, queue_item_marshaller/1]).
@@ -230,14 +230,9 @@ send_sync(Pid, Batch0, Timeout) ->
 
 init(St) ->
   erlang:process_flag(trap_exit, true),
-  %% ensure init/1 can never fail
-  %% so the caller can unify error handling on EXIT signal
-  self() ! {do_init, St},
-  {ok, #{}}.
+  {ok, St, {continue, do_init}}.
 
--spec do_init(map()) -> state().
 do_init(#{client_id := ClientId,
-          conn := Conn,
           topic := Topic,
           partition := Partition,
           config := Config0
@@ -262,35 +257,33 @@ do_init(#{client_id := ClientId,
                          marshaller => fun ?MODULE:queue_item_marshaller/1,
                          max_total_bytes => MaxTotalBytes
                         }),
-  %% The initial connect attempt is made by the caller (wolff_producers.erl)
-  %% If succeeded, `Conn' is a pid (but it may as well be dead by now),
-  %% if failed, it's a `term()' to indicate the failure reason.
-  %% Send it to self regardless of failure, retry timer should be started
-  %% when the message is received (same handling as in when `DOWN' message is
-  %% received after a normal start)
-  _ = erlang:send(self(), ?leader_connection(Conn)),
-  %% replayq configs are kept in Q, there is no need to duplicate them
   Config1 = maps:update_with(
               telemetry_meta_data,
               fun(Meta) -> Meta#{partition_id => Partition} end,
               #{partition_id => Partition},
               Config0),
   Config2 = resolve_max_linger_bytes(Config1, Q),
+  %% replayq configs are kept in Q, there is no need to duplicate them
   Config = maps:without([replayq_dir, replayq_seg_bytes], Config2),
   wolff_metrics:queuing_set(Config, replayq:count(Q)),
   wolff_metrics:queuing_bytes_set(Config, replayq:bytes(Q)),
   wolff_metrics:inflight_set(Config, 0),
-  St#{replayq => Q,
-      config := Config,
-      pending_acks => wolff_pendack:new(),
-      produce_api_vsn => undefined,
-      sent_reqs => queue:new(), % {kpro:req(), replayq:ack_ref(), [{CallId, MsgCount}]}
-      sent_reqs_count => 0,
-      inflight_calls => 0,
-      conn := undefined,
-      client_id => ClientId,
-      calls => ?EMPTY
-  }.
+  %% The initial connect attempt is made by the caller (wolff_producers.erl)
+  %% If succeeded, 'Conn' is a pid (but it may as well be dead by now),
+  %% if failed, it's a `term()' to indicate the failure reason.
+  %% When it's not a pid, retry timer will be started in mark_connection_down
+  %% like when 'DOWN' message is received.
+  handle_leader_connection(
+    St#{replayq => Q,
+        config => Config,
+        pending_acks => wolff_pendack:new(),
+        produce_api_vsn => undefined,
+        sent_reqs => queue:new(), % {kpro:req(), replayq:ack_ref(), [{CallId, MsgCount}]}
+        sent_reqs_count => 0,
+        inflight_calls => 0,
+        client_id => ClientId,
+        calls => ?EMPTY
+       }).
 
 handle_call(stop, From, St) ->
   gen_server:reply(From, ok),
@@ -298,9 +291,9 @@ handle_call(stop, From, St) ->
 handle_call(_Call, _From, St) ->
   {noreply, St}.
 
-handle_info({do_init, St0}, _) ->
-  St = do_init(St0),
-  {noreply, St};
+handle_continue(do_init, St0) ->
+  {noreply, do_init(St0)}.
+
 handle_info(?linger_expire, St0) ->
   St1 = enqueue_calls(St0#{?linger_expire_timer => false}, no_linger),
   St = maybe_send_to_kafka(St1),
@@ -326,23 +319,8 @@ handle_info({msg, Conn, Rsp}, #{conn := Conn} = St0) ->
       St = mark_connection_down(St0, Reason),
       {noreply, St}
   end;
-handle_info(?leader_connection(Conn), #{topic := Topic,
-                                        partition := Partition
-                                       } = St0) when is_pid(Conn) ->
-  Attempts = maps:get(reconnect_attempts, St0, 0),
-  Attempts > 0 andalso
-    log_info(Topic, Partition, "partition_leader_reconnected", #{conn_pid => Conn}),
-  _ = erlang:monitor(process, Conn),
-  St1 = St0#{reconnect_timer => ?no_timer,
-             reconnect_attempts => 0, %% reset counter
-             conn := Conn},
-  St2 = get_produce_version(St1),
-  St3 = resend_sent_reqs(St2, ?reconnect),
-  St  = maybe_send_to_kafka(St3),
-  {noreply, St};
-handle_info(?leader_connection(?conn_down(Reason)), St0) ->
-  St = mark_connection_down(St0#{reconnect_timer => ?no_timer}, Reason),
-  {noreply, St};
+handle_info(?leader_connection(Conn), St) ->
+  {noreply, handle_leader_connection(St#{conn := Conn})};
 handle_info(?reconnect, St0) ->
   St = St0#{reconnect_timer => ?no_timer},
   {noreply, ensure_delayed_reconnect(St, normal_delay)};
@@ -358,18 +336,37 @@ handle_info(_Info, St) ->
   {noreply, St}.
 
 handle_cast({stop, Reason}, St) ->
-  {stop, Reason, St};
+  {stop, {shutdown, Reason}, St};
 handle_cast(_Cast, St) ->
   {noreply, St}.
 
 code_change(_OldVsn, St, _Extra) ->
   {ok, St}.
 
-terminate(_Reason, #{replayq := Q} = State) ->
-  ok = replayq:close(Q),
-  ok = clear_gauges(State, Q);
-terminate(_Reason, _State) ->
-  ok.
+terminate(Reason, #{replayq := Q} = St) ->
+  case Reason of
+    {shutdown, ?partition_lost} ->
+      ok = replayq:close_and_purge(Q),
+      _ = reply_error_for_all_reqs(St, ?partition_lost);
+    _ ->
+      ok = replayq:close(Q)
+  end,
+  ok = clear_gauges(St, Q).
+
+%% Share the same logic for initial connection and reconnect
+handle_leader_connection(#{topic := Topic, partition := Partition, conn := Conn} = St0) when is_pid(Conn) ->
+  Attempts = maps:get(reconnect_attempts, St0, 0),
+  Attempts > 0 andalso
+    log_info(Topic, Partition, "partition_leader_reconnected", #{conn_pid => Conn}),
+  _ = erlang:monitor(process, Conn),
+  St1 = St0#{reconnect_timer => ?no_timer,
+             reconnect_attempts => 0, %% reset counter
+             conn := Conn},
+  St2 = get_produce_version(St1),
+  St3 = resend_sent_reqs(St2, ?reconnect),
+  maybe_send_to_kafka(St3);
+handle_leader_connection(#{conn := Reason} = St) ->
+  mark_connection_down(St#{reconnect_timer => ?no_timer}, Reason).
 
 clear_gauges(#{config := Config}, Q) ->
   wolff_metrics:inflight_set(Config, 0),
@@ -989,6 +986,23 @@ handle_overflow(#{replayq := Q,
   {CbList, NewPendingAcks} = wolff_pendack:drop_backlog(PendingAcks, CallIDs),
   lists:foreach(fun(Cb) -> eval_ack_cb(Cb, ?buffer_overflow_discarded) end, CbList),
   St#{replayq := NewQ, pending_acks := NewPendingAcks}.
+
+reply_error_for_all_reqs(St, Reason) ->
+  #{pending_acks := PendingAcks, config := Config, sent_reqs := SentReqs} = St,
+  F = fun(Cb, Acc) ->
+    eval_ack_cb(Cb, Reason),
+    Acc + 1
+  end,
+  Count = wolff_pendack:fold(PendingAcks, F, 0),
+  AlreadyInc = lists:foldl(
+    fun(#{attempts := 1}, Acc) ->
+      %% sent but not yet acked
+      Acc + 1;
+    (_, Acc) ->
+      %% sent and acked with error, the failed count is already incremented
+      Acc
+  end, 0, queue:to_list(SentReqs)),
+  inc_sent_failed(Config, Count - AlreadyInc, 1).
 
 %% use process dictionary for upgrade without restart
 maybe_log_discard(St, Increment) ->

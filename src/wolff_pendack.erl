@@ -23,6 +23,7 @@
 
 -export([new/0, count/1, insert_backlog/2]).
 -export([take_inflight/2, drop_backlog/2, move_backlog_to_inflight/2]).
+-export([fold/3]).
 
 -export_type([acks/0]).
 
@@ -169,3 +170,26 @@ move1(#{backlog := Backlog0, inflight := Inflight0} = X, Id) ->
             Inflight = insert_inflight(Inflight0, Id, Cb),
             X#{backlog := Backlog, inflight := Inflight}
     end.
+
+%% @doc Fold the pending acks from the head (older end, smallest ID) to the tail (newer end, largest ID).
+-spec fold(acks(), fun((cb(), term()) -> term()), term()) -> term().
+fold(#{backlog := Backlog, inflight := Inflight}, Fun, Acc) ->
+    Acc1 = fold2(Inflight, Fun, Acc),
+    fold2(Backlog, Fun, Acc1).
+
+fold2(Q, Fun, Acc) ->
+    case queue:out(Q) of
+        {empty, _} ->
+            Acc;
+        {{value, {Key, Cb}}, Q1} ->
+            Acc1 = fold3(Key, Cb, Fun, Acc),
+            fold2(Q1, Fun, Acc1)
+    end.
+
+fold3(Id, Cb, Fun, Acc) when is_integer(Id) ->
+    Fun(Cb, Acc);
+fold3({MinId, MaxId}, _Cb, _Fun, Acc) when MinId > MaxId ->
+    Acc;
+fold3({MinId, MaxId}, Cb, Fun, Acc) ->
+    Acc1 = Fun(Cb, Acc),
+    fold3({MinId + 1, MaxId}, Cb, Fun, Acc1).
