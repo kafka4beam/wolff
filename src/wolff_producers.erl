@@ -358,7 +358,7 @@ pick_partition(Count, first_key_dispatch, [#{key := Key} | _]) ->
 
 -spec init({client_id(), id(), config()}) -> {ok, map()}.
 init({ClientId, ?NS_TOPIC(_, Topic) = ID, Config}) ->
-  erlang:process_flag(trap_exit, true),
+  process_flag(trap_exit, true),
   self() ! ?rediscover_client,
   Status =
     case Topic =:= ?DYNAMIC of
