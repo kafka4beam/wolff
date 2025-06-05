@@ -275,8 +275,8 @@ create_topic(Topic) when is_binary(Topic) ->
 create_topic(Topic) ->
   Cmd = kafka_topic_cmd_base(Topic) ++ " --create --partitions 1 --replication-factor 1",
   Result = os:cmd(Cmd),
-  Pattern = "Created topic " ++ Topic ++ ".",
-  ?assert(string:str(Result, Pattern) > 0),
+  Pattern = "Created topic ",
+  ?assert(string:str(Result, Pattern) > 0, Result),
   ok.
 
 delete_topic(Topic) when is_binary(Topic) ->
@@ -287,9 +287,7 @@ delete_topic(Topic) ->
   ok.
 
 kafka_topic_cmd_base(Topic) ->
-  "docker exec wolff-kafka-1 /opt/kafka/bin/kafka-topics.sh" ++
-  " --zookeeper zookeeper:2181" ++
-  " --topic '" ++ Topic ++ "'".
+  wolff_test_utils:topics_cmd_base(Topic).
 
 start(ClientId, ProducerCfg) ->
   wolff:ensure_supervised_dynamic_producers(ClientId, ProducerCfg).

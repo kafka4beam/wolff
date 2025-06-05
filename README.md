@@ -198,10 +198,16 @@ wants to use.
 
 ## How to Test
 
-Start Kafka in docker containers from dokcer-compose.yml in this repo.
+Start Kafka in docker containers from dokcer-compose files in ./scripts.
 
 ```
-docker compose up -d
+# Set Kafka version.
+# See supported versions [here](https://github.com/zmstone/docker-kafka/blob/master/Makefile)
+export KAFKA_VERSION=4.0
+. scripts/env
+make test-env
+make eunit
+make ct
 ```
 
 ## License

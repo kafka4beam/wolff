@@ -1,0 +1,59 @@
+networks:
+  kafka-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${KAFKA_NET}
+
+services:
+  kafka_1:
+    image: ${KAFKA_IMAGE_TAG}
+    container_name: 'kafka-1'
+    networks:
+      kafka-net:
+        ipv4_address: ${KAFKA_1_IP}
+    ports:
+      - "9092:9092"
+      - "9093:9093"
+      - "9094:9094"
+      - "9095:9095"
+    environment:
+      BROKER_ID: 1
+      # kafka-1 is the only cluster controller
+      ROLES: broker,controller
+      CONTROLLER_PORT: 9090
+      INNER_PORT: 9091
+      PLAINTEXT_PORT: 9092
+      SSL_PORT: 9093
+      SASL_SSL_PORT: 9094
+      SASL_PLAINTEXT_PORT: 9095
+      ADVERTISED_HOSTNAME: ${KAFKA_1_IP}
+      INNER_HOSTNAME: ${KAFKA_1_IP}
+      VOTERS: 1@${KAFKA_1_IP}:9090
+  kafka_2:
+    image: ${KAFKA_IMAGE_TAG}
+    container_name: 'kafka-2'
+    networks:
+      kafka-net:
+        ipv4_address: ${KAFKA_2_IP}
+    ports:
+      - "9192:9092"
+      - "9193:9093"
+      - "9194:9094"
+      - "9195:9095"
+    environment:
+      BROKER_ID: 2
+      # Just broker role
+      # Cannot make both Kafka nodes controller
+      # because otherwise kafka-1 becomes unavailable
+      # for the leader restart test case (which restarts kafka-2)
+      ROLES: broker
+      CONTROLLER_PORT: 9090
+      INNER_PORT: 9091
+      PLAINTEXT_PORT: 9092
+      SSL_PORT: 9093
+      SASL_SSL_PORT: 9094
+      SASL_PLAINTEXT_PORT: 9095
+      ADVERTISED_HOSTNAME: ${KAFKA_2_IP}
+      INNER_HOSTNAME: ${KAFKA_2_IP}
+      VOTERS: 1@${KAFKA_1_IP}:9090

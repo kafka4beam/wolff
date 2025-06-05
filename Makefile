@@ -1,3 +1,8 @@
+KAFKA_IMAGE_VERSION ?= 1.1.3
+export KAFKA_IMAGE_VERSION
+KAFKA_VERSION ?= 4.0.0
+export KAFKA_VERSION
+
 all: eunit ct cover
 
 .PHONY: compile
@@ -49,3 +54,7 @@ coveralls:
 
 hex-publish: clean
 	@rebar3 hex publish --repo=hexpm
+
+.PHONY: test-env
+test-env:
+	@./scripts/setup-test-env.sh

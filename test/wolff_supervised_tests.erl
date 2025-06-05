@@ -74,7 +74,10 @@ test_supervised_producers(Name) ->
   ok.
 
 %% Checks that having different producers to the same kafka topic works.
-different_producers_same_topic_test() ->
+different_producers_same_topic_test_() ->
+  {timeout, 30, fun test_different_producers_same_topic/0}.
+
+test_different_producers_same_topic() ->
   _ = application:stop(wolff), %% ensure stopped
   {ok, _} = application:ensure_all_started(wolff),
   ClientId = <<"same-topic">>,
@@ -316,13 +319,15 @@ test_partition_count_increase() ->
                  },
   {ok, Producers} = wolff:ensure_supervised_producers(ClientId, Topic, ProducerCfg),
   Msg = #{key => ?KEY, value => <<"value">>},
-  {Partition0, _} = wolff:send_sync(Producers, [Msg], 3000),
+  {Partition0, Offset0} = wolff:send_sync(Producers, [Msg], 3000),
+  ?assert(is_integer(Offset0), Offset0),
   ?assertEqual(Partitions0 - 1, Partition0),
   %% create a new partition
   ensure_partitions(Topic, Partitions0 + 1),
   %% wait for the new partition to be discovered
   timer:sleep(timer:seconds(IntervalSeconds * 2)),
-  {Partition1, _} = wolff:send_sync(Producers, [Msg], 3000),
+  {Partition1, Offset1} = wolff:send_sync(Producers, [Msg], 3000),
+  ?assert(is_integer(Offset1), Offset1),
   ?assertEqual(Partitions0, Partition1),
   [1,1] = get_telemetry_seq(CntrEventsTable, [wolff,success]),
   assert_last_event_is_zero(queuing, CntrEventsTable),
@@ -650,7 +655,8 @@ fetch(Connection, Topic, Partition, Offset, MaxBytes) ->
   Opts = #{ max_wait_time => 500
           , max_bytes => MaxBytes
           },
-  Req = kpro_req_lib:fetch(_Vsn = 0, Topic, Partition, Offset, Opts),
+  {ok, {_, Vsn}} = kpro:get_api_vsn_range(Connection, fetch),
+  Req = kpro_req_lib:fetch(Vsn, Topic, Partition, Offset, Opts),
   {ok, #kpro_rsp{msg = Rsp}} = kpro:request_sync(Connection, Req, 5000),
   [TopicRsp] = kpro:find(responses, Rsp),
   [PartitionRsp] = kpro:find(partition_responses, TopicRsp),
@@ -674,22 +680,19 @@ key(Name) ->
   iolist_to_binary(io_lib:format("~0p/~0p/~0p", [Name, calendar:local_time(), erlang:system_time()])).
 
 count_partitions(Topic) ->
-  Cmd = kafka_topic_cmd_base(Topic) ++ " --describe | grep Configs | awk '{print $4}'",
-  list_to_integer(string:strip(os:cmd(Cmd), right, $\n)).
+  Cmd = kafka_topic_cmd_base(Topic) ++ " --describe | grep Configs: | awk -F'PartitionCount[: ]*' '{print $2}' | awk '{print $1}'",
+  Result = os:cmd(Cmd),
+  list_to_integer(string:strip(Result, right, $\n)).
 
 ensure_partitions(Topic, Partitions) ->
   Cmd = kafka_topic_cmd_base(Topic) ++ " --alter --partitions " ++ integer_to_list(Partitions),
   Result = os:cmd(Cmd),
   Pattern = "Adding partitions succeeded!",
-  ?assert(string:str(Result, Pattern) > 0),
+  ?assert(Result =:= [] orelse string:str(Result, Pattern) > 0, Result),
   ok.
 
-kafka_topic_cmd_base(Topic) when is_binary(Topic) ->
-  kafka_topic_cmd_base(binary_to_list(Topic));
 kafka_topic_cmd_base(Topic) ->
-  "docker exec wolff-kafka-1 /opt/kafka/bin/kafka-topics.sh" ++
-  " --zookeeper zookeeper:2181" ++
-  " --topic '" ++ Topic ++ "'".
+  wolff_test_utils:topics_cmd_base(Topic).
 
 get_telemetry_seq(Table, Event) ->
     wolff_tests:get_telemetry_seq(Table, Event).
@@ -714,15 +717,8 @@ create_topic(Topic, Partitions) ->
   Cmd = kafka_topic_cmd_base(Topic) ++ " --create --replication-factor 1 --partitions " ++ integer_to_list(Partitions),
   Result = os:cmd(Cmd),
   Pattern = "Created topic",
-  ?assert(string:str(Result, Pattern) > 0),
+  ?assert(string:str(Result, Pattern) > 0, Result),
   ok.
 
 delete_topic(Topic) ->
-  Cmd = kafka_topic_cmd_base(Topic) ++ " --delete",
-  Result = os:cmd(Cmd),
-  case string:str(Result, "does not exist") of
-    I when I > 0 -> ok;
-    _ ->
-      Pattern = "marked for deletion",
-      ?assert(string:str(Result, Pattern) > 0)
-  end.
+  wolff_test_utils:delete_topic(Topic).
