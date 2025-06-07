@@ -10,13 +10,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        otp:
-          - '27.3'
-          - '26.2'
-        kafka:
-          - '2.4'
-          - '1.1'
-          - '0.11'
+        vsn: [["27.3", "1.1"], ["26.2", "2.8"], ["27.3", "3.9"], ["26.2", "4.0"]]
     runs-on: ubuntu-latest
     steps:
 
@@ -41,7 +35,7 @@ jobs:
     - name: Install Erlang/OTP
       uses: erlef/setup-beam@v1
       with:
-        otp-version: ${{matrix.otp}}
+        otp-version: ${{matrix.vsn[0]}}
         rebar3-version: '3.24.0'
 
     # Compile
@@ -51,5 +45,11 @@ jobs:
     # Tests
     - name: Run tests
       run: |
-          ./start-kafka.sh
-          make eunit || (docker compose logs; false)
+          export DEBUG=1
+          export KAFKA_VERSION=${{ matrix.vsn[1] }}
+          . scripts/.env
+          export ZOOKEEPER_IP
+          echo "Running Kafka ${KAFKA_VERSION}, Zookeeper: ${ZOOKEEPER_IP}"
+          make test-env
+          make eunit
+          make ct

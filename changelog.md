@@ -1,5 +1,9 @@
+* 4.0.10
+  - Upgrade to `kafka_protocol-4.2.6`.
+    Update test environment to test against Kafka 4.0.0 (KRaft mode)
+
 * 4.0.9 (merge 1.5.16)
-   - Fix a remaining issue in 4.0.7: the pending acks in lost partitions should be replied to the caller, and the failed counters should be incremented.
+  - Fix a remaining issue in 4.0.7: the pending acks in lost partitions should be replied to the caller, and the failed counters should be incremented.
 
 * 4.0.8
   - Upgrade to `kafka_protocol-4.2.3` for crc32c performance improvements

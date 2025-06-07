@@ -56,7 +56,10 @@ ack_cb(Partition, Offset, Self, Ref) ->
   Self ! {ack, Ref, Partition, Offset},
   ok.
 
-metadata_connection_restart_test() ->
+metadata_connection_restart_test_() ->
+  {timeout, 10, fun metadata_connection_restart/0}.
+
+metadata_connection_restart() ->
   ClientCfg = client_config(),
   ClientId = <<"client-1">>,
   {ok, Client} = start_client(ClientId, ?HOSTS, ClientCfg),
@@ -74,7 +77,10 @@ metadata_connection_restart_test() ->
   ok = stop_client(Client),
   ?assertNot(is_process_alive(Pid2)).
 
-metadata_connection_restart2_test() ->
+metadata_connection_restart2_test_() ->
+  {timeout, 10, fun metadata_connection_restart2/0}.
+
+metadata_connection_restart2() ->
   ClientCfg0 = client_config(),
   ClientCfg = ClientCfg0#{min_metadata_refresh_interval => 0},
   ClientId = <<"client-1">>,
@@ -763,7 +769,7 @@ client_state_upgrade_test() ->
   ?assertMatch({error, #{reason := no_such_client}}, wolff:check_connectivity(ClientId)),
   ok = application:stop(wolff).
 
-fail_to_connect_all_test() ->
+fail_to_connect_all_test_() ->
   {timeout, 30,
    fun() -> test_fail_to_connect_all() end}.
 
@@ -794,12 +800,13 @@ show(X) ->
     X.
 
 leader_restart_test_() ->
-  {timeout, 60,
+  {timeout, 90,
    fun() -> test_leader_restart() end}.
 
 test_leader_restart() ->
   Topic = "testtopic" ++ integer_to_list(abs(erlang:monotonic_time())),
   %% number of partitions should be greater than number of Kafka brokers
+  %% to ensure there is at least one leader in kafka-2
   Partitions = 5,
   %% replication factor has to be 1 to trigger leader_not_available error code
   ReplicationFactor = 1,
@@ -812,6 +819,8 @@ test_leader_restart() ->
     TopicBin = iolist_to_binary(Topic),
     {ok, LeadersA0} = get_leader_connections(ClientA, TopicBin),
     {ok, LeadersB0} = get_leader_connections(ClientB, TopicBin),
+    %% Restart kafka-2, but not kakfa-1, because kafka-1 is the cluster controller
+    %% when Kafka version >= 3
     ok = stop_kafka_2(),
     {ok, LeadersA1} = get_leader_connections(ClientA, TopicBin),
     {ok, LeadersB1} = get_leader_connections(ClientB, TopicBin),
@@ -888,7 +897,10 @@ test_message_too_large() ->
     ok = application:stop(wolff)
   end).
 
-one_byte_limit_test() ->
+one_byte_limit_test_() ->
+  {timeout, 10, fun one_byte_limit/0}.
+
+one_byte_limit() ->
   Topic = "one-byte-limit-" ++ integer_to_list(abs(erlang:monotonic_time())),
   Partitions = 1,
   ReplicationFactor = 1,
@@ -1001,23 +1013,16 @@ encoded_bytes(Batch) ->
 create_topic(Topic, Partitions, ReplicationFactor, MaxMessageBytes) ->
   Cmd = create_topic_cmd(Topic, Partitions, ReplicationFactor, MaxMessageBytes),
   Result = os:cmd(Cmd),
-  Expected = "Created topic " ++ Topic ++ ".\n",
-  ?assertEqual(Expected, Result),
+  Pattern = "Created topic ",
+  ?assert(string:str(Result, Pattern) > 0, Result),
   ok.
 
 delete_topic(Topic) ->
-  Cmd = delete_topic_cmd(Topic),
-  Result = os:cmd(Cmd),
-  case string:str(Result, "Topic " ++ Topic ++ " is marked for deletion.") of
-    1 -> ok;
-    _ -> throw(Result)
-  end.
+  wolff_test_utils:delete_topic(Topic).
 
 create_topic_cmd(Topic, Partitions, ReplicationFactor, MaxMessageBytes) ->
-  "docker exec wolff-kafka-1 /opt/kafka/bin/kafka-topics.sh" ++
-  " --zookeeper zookeeper:2181" ++
+  wolff_test_utils:topics_cmd_base(Topic) ++
   " --create" ++
-  " --topic '" ++ Topic ++ "'" ++
   " --partitions " ++ integer_to_list(Partitions) ++
   " --replication-factor " ++ integer_to_list(ReplicationFactor) ++
   case is_integer(MaxMessageBytes) of
@@ -1027,21 +1032,27 @@ create_topic_cmd(Topic, Partitions, ReplicationFactor, MaxMessageBytes) ->
       ""
   end.
 
-delete_topic_cmd(Topic) ->
-  "docker exec wolff-kafka-1 /opt/kafka/bin/kafka-topics.sh" ++
-  " --zookeeper zookeeper:2181" ++
-  " --delete" ++
-  " --topic '" ++ Topic ++ "'".
-
 stop_kafka_2() ->
-  Cmd = "docker stop wolff-kafka-2",
+  Cmd = "docker stop kafka-2",
   os:cmd(Cmd),
   ok.
 
 start_kafka_2() ->
-  Cmd = "docker start wolff-kafka-2",
+  Cmd = "docker start kafka-2",
   os:cmd(Cmd),
+  ok = wait_for_kafka(60),
   ok.
+
+wait_for_kafka(0) ->
+  error(timeout);
+wait_for_kafka(Limit) ->
+  case wolff:check_connectivity([{"localhost", 9192}], client_config()) of
+    ok ->
+      ok;
+    {error, _Reason} ->
+      timer:sleep(1000),
+      wait_for_kafka(Limit - 1)
+  end.
 
 %% Helper function that is useful when one wants to get code to check that the
 %% telemetry events are triggered correctly in a test case
