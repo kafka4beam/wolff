@@ -1,3 +1,8 @@
+* 1.5.17
+  - Avoid `badfun` error when release hot upgrade.
+* 1.5.16
+  - Handle metadata fetch error.
+    `{error, Reason}` tuple was not handled by `wolff_producer` (only expects {conn_down, Reason} tuple), causing the partition-leader re-discovery timer to be expired permanently.
 * 1.5.15
   - Upgrade `kafka_protocol` to 2.3.6.6
   - Handle topic recreation with fewer partitions.

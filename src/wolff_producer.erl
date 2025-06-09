@@ -22,6 +22,8 @@
 %% APIs
 -export([start_link/5, stop/1, stop/2, send/3, send_sync/3]).
 
+-export([sync_ack_fun/4]).
+
 %% gen_server callbacks
 -export([code_change/3, handle_call/3, handle_cast/2, handle_info/2, init/1, terminate/2]).
 
@@ -141,13 +143,8 @@ send(Pid, [_ | _] = Batch0, AckFun) ->
 send_sync(Pid, Batch0, Timeout) ->
   Caller = self(),
   Mref = erlang:monitor(process, Pid),
-  %% synced local usage, safe to use anonymous fun
-  AckFun = fun(Partition, BaseOffset) ->
-               _ = erlang:send(Caller, {Mref, Partition, BaseOffset}),
-               ok
-           end,
   Batch = ensure_ts(Batch0),
-  erlang:send(Pid, ?SEND_REQ(?no_queued_reply, Batch, AckFun)),
+  erlang:send(Pid, ?SEND_REQ(?no_queued_reply, Batch, {fun ?MODULE:sync_ack_fun/4, [Caller, Mref]})),
   receive
     {Mref, Partition, BaseOffset} ->
       erlang:demonitor(Mref, [flush]),
@@ -159,6 +156,10 @@ send_sync(Pid, Batch0, Timeout) ->
       erlang:demonitor(Mref, [flush]),
       erlang:error(timeout)
   end.
+
+sync_ack_fun(Partition, BaseOffset, Caller, Mref) ->
+  _ = erlang:send(Caller, {Mref, Partition, BaseOffset}),
+  ok.
 
 init(St) ->
   erlang:process_flag(trap_exit, true),
@@ -756,9 +757,21 @@ enqueue_calls(Calls, #{replayq := Q,
 maybe_reply_queued(?SEND_REQ(?no_queued_reply, _, _)) -> ok;
 maybe_reply_queued(?SEND_REQ({Pid, Ref}, _, _)) -> erlang:send(Pid, {Ref, ?queued}).
 
-eval_ack_cb(?ACK_CB(AckFun, Partition), BaseOffset) when is_function(AckFun, 2) ->
-  ok = AckFun(Partition, BaseOffset); %% backward compatible
-eval_ack_cb(?ACK_CB({F, A}, Partition), BaseOffset) ->
+eval_ack_cb(ACK_CB, BaseOffset) ->
+  try
+    ok = do_eval_ack_cb(ACK_CB, BaseOffset)
+  catch
+    error:{badfun, _} ->
+      %% Don't crash on badfun as it merely indicates that the module has been
+      %% reloaded by the release handler. In this scenario, the caller either
+      %% times out (when it is a sync call) or loses a counter (when it is an
+      %% async call), but actually the message has been sent to kafka and is not lost.
+      ok
+  end.
+
+do_eval_ack_cb(?ACK_CB(AckFun, Partition), BaseOffset) when is_function(AckFun, 2) ->
+  ok = AckFun(Partition, BaseOffset);
+do_eval_ack_cb(?ACK_CB({F, A}, Partition), BaseOffset) ->
   true = is_function(F, length(A) + 2),
   ok = erlang:apply(F, [Partition, BaseOffset | A]).
 
