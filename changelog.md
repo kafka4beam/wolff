@@ -1,3 +1,6 @@
+* 4.0.11
+  - Upgrade to `kafka_protocol-4.2.8`. Fixed build speed and link issue for crc32c.
+
 * 4.0.10
   - Upgrade to `kafka_protocol-4.2.6`.
     Update test environment to test against Kafka 4.0.0 (KRaft mode)
