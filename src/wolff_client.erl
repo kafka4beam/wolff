@@ -113,8 +113,8 @@ safe_call(Pid, Call) ->
   end.
 
 %% request client to send Pid the leader connection.
-recv_leader_connection(Client, Topic, Partition, Pid) ->
-  gen_server:cast(Client, {recv_leader_connection, Topic, Partition, Pid}).
+recv_leader_connection(Client, Topic, Partition, Caller) ->
+  gen_server:cast(Client, {recv_leader_connection, Topic, Partition, Caller}).
 
 delete_producers_metadata(Client, Topic) ->
     gen_server:cast(Client, {delete_producers_metadata, Topic}).

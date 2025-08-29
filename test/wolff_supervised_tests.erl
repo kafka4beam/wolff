@@ -210,7 +210,7 @@ partition_count_decrease_test_() ->
 
 test_partition_count_decrease() ->
   io:format(user, "test_partition_count_decrease\n", []),
-  ClientId = <<"test-add-more-partitions">>,
+  ClientId = <<"test-recreate-topic-with-fewer-partitions">>,
   %% ensure the topic does not exist
   Topic = <<"test-topic-4">>,
   delete_topic(Topic),
@@ -273,7 +273,106 @@ test_partition_count_decrease() ->
   ok = application:stop(wolff),
   ok.
 
-test_topic_recreate_test_() ->
+%% A partition is (temporarily?) missing from metadata response.
+partition_missing_in_metadata_response_test_() ->
+  {timeout, 30, %% it takes time to alter topic via cli in docker container
+   fun test_partition_missing_in_metadata_response/0}.
+
+test_partition_missing_in_metadata_response() ->
+  io:format(user, "test_partition_missing_in_metadata_response\n", []),
+  ClientId = <<"test-temporarily-malformed-metadata-response">>,
+  %% ensure the topic does not exist
+  Topic = <<"test-topic-5">>,
+  delete_topic(Topic),
+  Partitions = 3,
+  create_topic(Topic, Partitions),
+  io:format(user, "created topic ~s with ~p partitions\n", [Topic, Partitions]),
+  _ = application:stop(wolff), %% ensure stopped
+  {ok, _} = application:ensure_all_started(wolff),
+  %% always refresh metadata
+  ClientCfg = #{min_metadata_refresh_interval => 0},
+  {ok, ClientPid} = wolff:ensure_supervised_client(ClientId, ?HOSTS, ClientCfg),
+  {ok, Connections} = wolff_client:get_leader_connections(ClientPid, Topic),
+  ?assertEqual(Partitions, length(Connections)),
+  %% always send it to the last partition
+  Partitioner = fun(Count, _) -> Count - 1 end,
+  Name = ?FUNCTION_NAME,
+  ProducerCfg = #{required_acks => all_isr,
+                  partitioner => Partitioner,
+                  reconnect_delay_ms => 0,
+                  name => Name,
+                  %% 0 means no aut-refresh
+                  partition_count_refresh_interval_seconds => 0
+                 },
+  {ok, Producers} = wolff:ensure_supervised_producers(ClientId, Topic, ProducerCfg),
+  ?assertEqual(Partitions, length(ets:tab2list(Name))),
+  Msg = #{key => ?KEY, value => <<"value">>},
+  {ThePartition, _} = wolff:send_sync(Producers, [Msg], 3000),
+  ?assertEqual(Partitions - 1, ThePartition),
+  %% mock a bad
+  %% Kill partition leader connection
+  Pid = get_partition_leader_connection(ClientPid, Topic, ThePartition),
+  exit(Pid, kill),
+  %% mock kafka_protcol to return metadata with ThePartition missing
+  meck:new(kpro, [non_strict, passthrough, no_history, no_link]),
+  meck:expect(kpro, request_sync,
+    fun(Connection, Req, Timeout) ->
+      {ok, Rsp} = meck:passthrough([Connection, Req, Timeout]),
+      case Rsp of
+        #kpro_rsp{msg = #{topic_metadata := [#{partition_metadata := PM0} = TopicMeta]} = Meta} ->
+          PM = lists:filter(fun(#{partition := P}) -> P =/= ThePartition end, PM0),
+          NewRsp = Rsp#kpro_rsp{msg =Meta#{topic_metadata := [TopicMeta#{partition_metadata := PM}]}},
+          {ok, NewRsp};
+        _ ->
+          {ok, Rsp}
+      end
+  end),
+  ?assertNot(is_pid(get_partition_leader_connection(ClientPid, Topic, ThePartition))),
+  %% the request will be buffered, but the call times out
+  Msg2 = #{key => ?KEY, value => <<"v">>},
+  ?assertError(timeout, wolff:send_sync(Producers, [Msg2], 100)),
+  %% Wait for auto recover
+  Tester = self(),
+  meck:expect(kpro, send,
+    fun(Conn, Req) ->
+      Tester ! {sent, Conn},
+      meck:passthrough([Conn, Req])
+    end),
+  %% Now remove the injected error (malformed metadata response)
+  %% wolff_producer should now be able to recover
+  meck:expect(kpro, request_sync,
+    fun(Connection, Req, Timeout) ->
+      meck:passthrough([Connection, Req, Timeout])
+    end),
+  receive
+    {sent, NewConn} ->
+      ?assertEqual(NewConn, get_partition_leader_connection(ClientPid, Topic, ThePartition))
+  after
+    2000 ->
+      %% wolff_producer retry delay is 0, but it randomize with extra 0-1000ms
+      error(timeout)
+  end,
+  meck:unload(kpro),
+  ok = fetch_and_match(ClientPid, Topic, ThePartition, 0, [Msg, Msg2]),
+  %% cleanup
+  ok = wolff:stop_and_delete_supervised_producers(ClientId, Topic, Name),
+  ?assertEqual([], supervisor:which_children(wolff_producers_sup)),
+  ok = wolff:stop_and_delete_supervised_client(ClientId),
+  ?assertEqual([], supervisor:which_children(wolff_client_sup)),
+  ok = application:stop(wolff),
+  ok.
+
+get_partition_leader_connection(Client, Topic, Partition) ->
+  ok = wolff_client:recv_leader_connection(Client, Topic, Partition, self()),
+  receive
+    {leader_connection, Pid} ->
+      Pid
+  after
+    20000 ->
+      error(timeout)
+  end.
+
+topic_recreate_test_() ->
   {timeout, 30, %% it takes time to alter topic via cli in docker container
    fun test_topic_recreate/0}.
 
