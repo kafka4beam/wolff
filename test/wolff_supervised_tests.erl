@@ -273,12 +273,19 @@ test_partition_count_decrease() ->
   ok = application:stop(wolff),
   ok.
 
-%% A partition is (temporarily?) missing from metadata response.
-partition_missing_in_metadata_response_test_() ->
+%% The last partition is temporarily missing from metadata response.
+%% The producer should retry to recover
+last_partition_missing_in_metadata_response_test_() ->
   {timeout, 30, %% it takes time to alter topic via cli in docker container
-   fun test_partition_missing_in_metadata_response/0}.
+   fun() -> test_partition_missing_in_metadata_response(2) end}.
 
-test_partition_missing_in_metadata_response() ->
+%% The partition in the middle is temporarily missing from metadata response.
+%% The producer should retry to recover
+mid_partition_missing_in_metadata_response_test_() ->
+  {timeout, 30, %% it takes time to alter topic via cli in docker container
+   fun() -> test_partition_missing_in_metadata_response(1) end}.
+
+test_partition_missing_in_metadata_response(ThePartition) ->
   io:format(user, "test_partition_missing_in_metadata_response\n", []),
   ClientId = <<"test-temporarily-malformed-metadata-response">>,
   %% ensure the topic does not exist
@@ -294,8 +301,8 @@ test_partition_missing_in_metadata_response() ->
   {ok, ClientPid} = wolff:ensure_supervised_client(ClientId, ?HOSTS, ClientCfg),
   {ok, Connections} = wolff_client:get_leader_connections(ClientPid, Topic),
   ?assertEqual(Partitions, length(Connections)),
-  %% always send it to the last partition
-  Partitioner = fun(Count, _) -> Count - 1 end,
+  %% always send it to the partition which is going to be missing
+  Partitioner = fun(_, _) -> ThePartition end,
   Name = ?FUNCTION_NAME,
   ProducerCfg = #{required_acks => all_isr,
                   partitioner => Partitioner,
@@ -307,8 +314,7 @@ test_partition_missing_in_metadata_response() ->
   {ok, Producers} = wolff:ensure_supervised_producers(ClientId, Topic, ProducerCfg),
   ?assertEqual(Partitions, length(ets:tab2list(Name))),
   Msg = #{key => ?KEY, value => <<"value">>},
-  {ThePartition, _} = wolff:send_sync(Producers, [Msg], 3000),
-  ?assertEqual(Partitions - 1, ThePartition),
+  ?assertMatch({ThePartition, _}, wolff:send_sync(Producers, [Msg], 3000)),
   %% mock a bad
   %% Kill partition leader connection
   Pid = get_partition_leader_connection(ClientPid, Topic, ThePartition),

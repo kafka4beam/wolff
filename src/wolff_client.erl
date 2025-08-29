@@ -170,13 +170,13 @@ handle_cast({recv_leader_connection, Topic, Partition, Caller}, St0) ->
       St = flush_exit_signals(St1),
       Partitions = do_get_leader_connections(St, Topic),
       _ = case lists:keyfind(Partition, 1, Partitions) of
-        {_, Pid} ->
-          erlang:send(Caller, ?leader_connection(Pid));
+        {_, MaybePid} ->
+          erlang:send(Caller, ?leader_connection(MaybePid));
         false ->
           log_warn("partition_missing_in_metadata_response ~s-~p", [Topic, Partition]),
           %% This happens as a race between metadata refresh and partition producer shutdown
           %% partition producer will be shutdown by wolff_producers after metadata refresh is complete
-          %% Or sometimes Kafka may return incomplete partitions metadata array
+          %% Or a malformed metadata response with the last partition missing.
           Reason = partition_missing_in_metadata_response,
           erlang:send(Caller, ?leader_connection(?conn_down(Reason)))
       end,
@@ -466,15 +466,42 @@ do_get_metadata2(Vsn, Connection, Topic) ->
       Brokers = [parse_broker_meta(M) || M <- BrokersMeta],
       [TopicMeta] = kpro:find(topic_metadata, Meta),
       ErrorCode = kpro:find(error_code, TopicMeta),
-      Partitions = kpro:find(partition_metadata, TopicMeta),
+      Partitions0 = kpro:find(partition_metadata, TopicMeta),
       case ErrorCode =:= ?no_error of
+        true when Partitions0 =:= [] ->
+          %% unsure if this is possible
+          {error, no_partitions_metadata};
         true ->
+          Partitions = fix_partition_metadata(Topic, Partitions0),
           {ok, {Brokers, Partitions}};
         false ->
           {error, ErrorCode} %% no such topic ?
       end;
     {error, Reason} ->
       {error, Reason}
+  end.
+
+%% The partitions count cache only caches the total number but not
+%% a list of partition numbers, so we need to fix the "holes" in
+%% the partition sequence (0 to N) if any,
+%% There is no partition count returned in metadata response,
+%% so we must rely on the max partition number to guess the total
+%% number of partitions.
+fix_partition_metadata(Topic, PartitionMetaList) ->
+  Partitions = lists:map(fun(M) -> kpro:find(partition, M) end, PartitionMetaList),
+  Max = lists:max(Partitions),
+  Seq = lists:seq(0, Max),
+  case Seq -- Partitions of
+    [] ->
+      PartitionMetaList;
+    Missing ->
+      log_warn("partitions_missing_in_metadata_response ~s: ~w", [Topic, Missing]),
+      PartitionMetaList ++
+      lists:map(fun(P) ->
+        #{partition => P,
+          error_code => partition_missing_in_metadata_response
+        }
+      end, Missing)
   end.
 
 -spec parse_broker_meta(kpro:struct()) -> {integer(), host()}.
