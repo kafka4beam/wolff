@@ -169,15 +169,16 @@ handle_cast({recv_leader_connection, Topic, Partition, Caller}, St0) ->
     {ok, St1} ->
       St = flush_exit_signals(St1),
       Partitions = do_get_leader_connections(St, Topic),
-      MaybePid = case lists:keyfind(Partition, 1, Partitions) of
+      _ = case lists:keyfind(Partition, 1, Partitions) of
         {_, Pid} ->
-          Pid;
+          erlang:send(Caller, ?leader_connection(Pid));
         false ->
-          %% this happens as a race between metadata refresh and partition producer shutdown
+          %% This happens as a race between metadata refresh and partition producer shutdown
           %% partition producer will be shutdown by wolff_producers after metadata refresh is complete
-          partition_missing_in_metadata_response
+          %% Or sometimes Kafka may return incomplete partitions metadata array
+          Reason = partition_missing_in_metadata_response,
+          erlang:send(Caller, ?leader_connection(?conn_down(Reason)))
       end,
-      _ = erlang:send(Caller, ?leader_connection(MaybePid)),
       {noreply, St};
     {error, Reason} ->
       _ = erlang:send(Caller, ?leader_connection(?conn_down(Reason))),
