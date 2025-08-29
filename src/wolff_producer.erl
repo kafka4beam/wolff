@@ -591,13 +591,30 @@ log_connection_down(Topic, Partition, _, noproc) ->
 log_connection_down(Topic, Partition, _, Reason) ->
   log_info(Topic, Partition, "connection to partition leader is down~nreason=~p", [Reason]).
 
-ensure_delayed_reconnect(#{config := #{reconnect_delay_ms := Delay0},
-                           client_id := ClientId,
-                           topic := Topic,
-                           partition := Partition,
-                           reconnect_timer := ?no_timer,
-                           conn := Conn
-                          } = St, DelayStrategy) ->
+is_timer_on(?no_timer) ->
+  false;
+is_timer_on({_, Ref}) when is_reference(Ref) ->
+  %% started by timer:apply_after
+  is_timer_on(Ref);
+is_timer_on(Ref) when is_reference(Ref) ->
+  erlang:read_timer(Ref) =/= false.
+
+ensure_delayed_reconnect(St, DelayStrategy) ->
+  Tref = maps:get(reconnect_timer, St, ?no_timer),
+  case is_timer_on(Tref) of
+    true ->
+      St;
+    false ->
+      do_ensure_delayed_reconnect(St, DelayStrategy)
+  end.
+
+do_ensure_delayed_reconnect(
+  #{config := #{reconnect_delay_ms := Delay0},
+    client_id := ClientId,
+    topic := Topic,
+    partition := Partition,
+    conn := Conn
+   } = St, DelayStrategy) ->
   Attempts = maps:get(reconnect_attempts, St, 0),
   Attempts > 0 andalso Attempts rem 10 =:= 0 andalso
     log_error(Topic, Partition, "still disconnected after ~p reconnect attempts, conn=~p~n", [Attempts, Conn]),
@@ -621,10 +638,7 @@ ensure_delayed_reconnect(#{config := #{reconnect_delay_ms := Delay0},
       %% call timer:apply_after for both cases, do not use send_after here
       {ok, Tref} = timer:apply_after(Delay, erlang, send, [self(), ?reconnect]),
       St#{reconnect_timer => Tref, reconnect_attempts => Attempts + 1}
-  end;
-ensure_delayed_reconnect(St, _Delay) ->
-  %% timer already started
-  St.
+  end.
 
 evaluate_pending_ack_funs(PendingAcks, [], _BaseOffset) -> PendingAcks;
 evaluate_pending_ack_funs(PendingAcks, [{?no_caller_ack, BatchSize} | Rest], BaseOffset) ->
