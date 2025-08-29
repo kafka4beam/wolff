@@ -320,7 +320,7 @@ test_partition_missing_in_metadata_response(ThePartition) ->
   Pid = get_partition_leader_connection(ClientPid, Topic, ThePartition),
   exit(Pid, kill),
   %% mock kafka_protcol to return metadata with ThePartition missing
-  meck:new(kpro, [non_strict, passthrough, no_history, no_link]),
+  meck:new(kpro, [passthrough, no_history]),
   meck:expect(kpro, request_sync,
     fun(Connection, Req, Timeout) ->
       {ok, Rsp} = meck:passthrough([Connection, Req, Timeout]),

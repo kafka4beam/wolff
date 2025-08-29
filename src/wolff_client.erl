@@ -481,20 +481,19 @@ do_get_metadata2(Vsn, Connection, Topic) ->
       {error, Reason}
   end.
 
-%% The partitions count cache only caches the total number but not
+%% The partitions count cache only caches the total count but not
 %% a list of partition numbers, so we need to fix the "holes" in
-%% the partition sequence (0 to N) if any,
+%% the partition sequence [0, N), if any.
 %% There is no partition count returned in metadata response,
 %% so we must rely on the max partition number to guess the total
 %% number of partitions.
 fix_partition_metadata(Topic, PartitionMetaList) ->
-  Partitions = lists:map(fun(M) -> kpro:find(partition, M) end, PartitionMetaList),
-  Max = lists:max(Partitions),
-  Seq = lists:seq(0, Max),
-  case Seq -- Partitions of
-    [] ->
+  Partitions = lists:sort(lists:map(fun(M) -> kpro:find(partition, M) end, PartitionMetaList)),
+  Missing = fix_partition_metadata_loop(Partitions, 0, []),
+  case Missing =:= [] of
+    true ->
       PartitionMetaList;
-    Missing ->
+    false ->
       log_warn("partitions_missing_in_metadata_response ~s: ~w", [Topic, Missing]),
       PartitionMetaList ++
       lists:map(fun(P) ->
@@ -503,6 +502,14 @@ fix_partition_metadata(Topic, PartitionMetaList) ->
         }
       end, Missing)
   end.
+
+fix_partition_metadata_loop([], _, Missing) ->
+  lists:reverse(Missing);
+fix_partition_metadata_loop([P | Partitions], P, Missing) ->
+  fix_partition_metadata_loop(Partitions, P + 1, Missing);
+fix_partition_metadata_loop([P0 | _] = Partitions, P, Missing) ->
+  true = (P0 > P),
+  fix_partition_metadata_loop(Partitions, P + 1, [P | Missing]).
 
 -spec parse_broker_meta(kpro:struct()) -> {integer(), host()}.
 parse_broker_meta(BrokerMeta) ->
