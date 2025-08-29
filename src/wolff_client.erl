@@ -173,6 +173,7 @@ handle_cast({recv_leader_connection, Topic, Partition, Caller}, St0) ->
         {_, Pid} ->
           erlang:send(Caller, ?leader_connection(Pid));
         false ->
+          log_warn("partition_missing_in_metadata_response ~s-~p", [Topic, Partition]),
           %% This happens as a race between metadata refresh and partition producer shutdown
           %% partition producer will be shutdown by wolff_producers after metadata refresh is complete
           %% Or sometimes Kafka may return incomplete partitions metadata array
