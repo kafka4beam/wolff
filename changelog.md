@@ -1,3 +1,9 @@
+* 1.5.18
+  - Partition metadata handling.
+    - Fixed an issue introduced in 1.5.15 where temporarily missing partitions in the metadata response could leave a `wolff_producer` process permanently disconnected.
+      `wolff_producer` now always attempts to reconnect, even if a partition disappears and reappears.
+    - Ensured that partition numbers in the metadata response are always sequential, even when Kafka returns malformed metadata.
+
 * 1.5.17
   - Avoid `badfun` error when release hot upgrade.
 * 1.5.16
