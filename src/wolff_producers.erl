@@ -685,7 +685,6 @@ start_producer_and_insert_pid(ClientId, Group, Topic, Partition, Config) ->
                                         ?conn_down(to_be_discovered), Config),
   ok = insert_producers(ClientId, Group, Topic, #{Partition => Pid}).
 
-%% Config is not used so far.
 start_partition_refresh_timer(Config) ->
   IntervalSeconds = maps:get(partition_count_refresh_interval_seconds, Config,
                              ?partition_count_refresh_interval_seconds),

@@ -149,8 +149,8 @@ safe_call(Pid, Call) ->
   end.
 
 %% request client to send Pid the leader connection.
-recv_leader_connection(Client, Group, Topic, Partition, Pid, MaxPartitions) ->
-  gen_server:cast(Client, {recv_leader_connection, Group, Topic, Partition, Pid, MaxPartitions}).
+recv_leader_connection(Client, Group, Topic, Partition, Caller, MaxPartitions) ->
+  gen_server:cast(Client, {recv_leader_connection, Group, Topic, Partition, Caller, MaxPartitions}).
 
 release_leader_conns(Client, Group, Topic) ->
     gen_server:cast(Client, {release_leader_conns, Group, Topic}).
@@ -214,15 +214,17 @@ handle_cast({recv_leader_connection, Group, Topic, Partition, Caller, MaxConnect
       %% then get the real EXIT reason in the retry attempts
       St = flush_exit_signals(St1),
       Partitions = do_get_leader_connections(St, Group, Topic),
-      MaybePid = case lists:keyfind(Partition, 1, Partitions) of
-        {_, Pid} ->
-          Pid;
+      _ = case lists:keyfind(Partition, 1, Partitions) of
+        {_, MaybePid} ->
+          erlang:send(Caller, ?leader_connection(MaybePid));
         false ->
-          %% this happens as a race between metadata refresh and partition producer shutdown
+          log_warn("partition_missing_in_metadata_response", #{topic => Topic, partition => Partition}),
+          %% This happens as a race between metadata refresh and partition producer shutdown
           %% partition producer will be shutdown by wolff_producers after metadata refresh is complete
-          partition_missing_in_metadata_response
+          %% Or a malformed metadata response with the last partition missing.
+          Reason = partition_missing_in_metadata_response,
+          erlang:send(Caller, ?leader_connection(?conn_down(Reason)))
       end,
-      _ = erlang:send(Caller, ?leader_connection(MaybePid)),
       {noreply, St};
     {error, Reason} ->
       _ = erlang:send(Caller, ?leader_connection(?conn_down(Reason))),
@@ -617,9 +619,13 @@ do_get_metadata2(Vsn, Connection, Topic, Timeout) ->
       Brokers = [parse_broker_meta(M) || M <- BrokersMeta],
       [TopicMeta] = kpro:find(topics, Meta),
       ErrorCode = kpro:find(error_code, TopicMeta),
-      Partitions = kpro:find(partitions, TopicMeta),
+      Partitions0 = kpro:find(partitions, TopicMeta),
       case ErrorCode =:= ?no_error of
+        true when Partitions0 =:= [] ->
+          %% unsure if this is possible
+          {error, no_partitions_metadata};
         true ->
+          Partitions = fix_partition_metadata(Topic, Partitions0),
           {ok, {Brokers, Partitions}};
         false ->
           {error, ErrorCode} %% no such topic ?
@@ -627,6 +633,36 @@ do_get_metadata2(Vsn, Connection, Topic, Timeout) ->
     {error, Reason} ->
       {error, Reason}
   end.
+
+%% The partitions count cache only caches the total count but not
+%% a list of partition numbers, so we need to fix the "holes" in
+%% the partition sequence [0, N), if any.
+%% There is no partition count returned in metadata response,
+%% so we must rely on the max partition number to guess the total
+%% number of partitions.
+fix_partition_metadata(Topic, PartitionMetaList) ->
+  Partitions = lists:sort(lists:map(fun(M) -> kpro:find(partition_index, M) end, PartitionMetaList)),
+  Missing = fix_partition_metadata_loop(Partitions, 0, []),
+  case Missing =:= [] of
+    true ->
+      PartitionMetaList;
+    false ->
+      log_warn("partitions_missing_in_metadata_response", #{topic => Topic, partitions => Missing}),
+      PartitionMetaList ++
+      lists:map(fun(P) ->
+        #{partition_index => P,
+          error_code => partition_missing_in_metadata_response
+        }
+      end, Missing)
+  end.
+
+fix_partition_metadata_loop([], _, Missing) ->
+  lists:reverse(Missing);
+fix_partition_metadata_loop([P | Partitions], P, Missing) ->
+  fix_partition_metadata_loop(Partitions, P + 1, Missing);
+fix_partition_metadata_loop([P0 | _] = Partitions, P, Missing) ->
+  true = (P0 > P),
+  fix_partition_metadata_loop(Partitions, P + 1, [P | Missing]).
 
 -spec parse_broker_meta(kpro:struct()) -> {integer(), host()}.
 parse_broker_meta(BrokerMeta) ->

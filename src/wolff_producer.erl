@@ -720,12 +720,29 @@ log_connection_down(Topic, Partition, Conn, Reason) ->
            "connection_to_partition_leader_error",
            #{conn => Conn, reason => Reason}).
 
-ensure_delayed_reconnect(#{config := #{reconnect_delay_ms := Delay0} = Config,
-                           client_id := ClientId,
-                           topic := Topic,
-                           partition := Partition,
-                           reconnect_timer := ?no_timer
-                          } = St, DelayStrategy) ->
+is_timer_on(?no_timer) ->
+  false;
+is_timer_on({_, Ref}) when is_reference(Ref) ->
+  %% started by timer:apply_after
+  is_timer_on(Ref);
+is_timer_on(Ref) when is_reference(Ref) ->
+  erlang:read_timer(Ref) =/= false.
+
+ensure_delayed_reconnect(St, DelayStrategy) ->
+  Tref = maps:get(reconnect_timer, St, ?no_timer),
+  case is_timer_on(Tref) of
+    true ->
+      St;
+    false ->
+      do_ensure_delayed_reconnect(St, DelayStrategy)
+  end.
+
+do_ensure_delayed_reconnect(
+  #{config := #{reconnect_delay_ms := Delay0} = Config,
+    client_id := ClientId,
+    topic := Topic,
+    partition := Partition
+   } = St, DelayStrategy) ->
   Attempts = maps:get(reconnect_attempts, St, 0),
   MaxPartitions = maps:get(max_partitions, Config, all_partitions),
   Attempts > 0 andalso Attempts rem 10 =:= 0 andalso
@@ -755,10 +772,7 @@ ensure_delayed_reconnect(#{config := #{reconnect_delay_ms := Delay0} = Config,
       %% call timer:apply_after for both cases, do not use send_after here
       {ok, Tref} = timer:apply_after(Delay, erlang, send, [self(), ?reconnect]),
       St#{reconnect_timer => Tref, reconnect_attempts => Attempts + 1}
-  end;
-ensure_delayed_reconnect(St, _Delay) ->
-  %% timer already started
-  St.
+  end.
 
 evaluate_pending_ack_funs(PendingAcks, [], _BaseOffset) -> PendingAcks;
 evaluate_pending_ack_funs(PendingAcks, [{CallId, BatchSize} | Rest], BaseOffset) ->
@@ -950,7 +964,7 @@ maybe_reply_queued(?SEND_REQ({Caller, Ref}, _, _)) ->
     erlang:send(Caller, {Ref, ?queued}).
 
 eval_ack_cb(?ACK_CB(AckFun, Partition), BaseOffset) when is_function(AckFun, 2) ->
-  ok = AckFun(Partition, BaseOffset); %% backward compatible
+  ok = AckFun(Partition, BaseOffset);
 eval_ack_cb(?ACK_CB({F, A}, Partition), BaseOffset) when is_function(F) ->
   true = is_function(F, length(A) + 2),
   ok = erlang:apply(F, [Partition, BaseOffset | A]);
