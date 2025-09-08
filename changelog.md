@@ -1,3 +1,9 @@
+* 4.0.12 (merge 1.5.18)
+  - Partition metadata handling.
+    - Fixed an issue introduced in 4.0.7 (1.5.15) where temporarily missing partitions in the metadata response could leave a `wolff_producer` process permanently disconnected.
+      `wolff_producer` now always attempts to reconnect, even if a partition disappears and reappears.
+    - Ensured that partition numbers in the metadata response are always sequential, even when Kafka returns malformed metadata.
+
 * 4.0.11
   - Upgrade to `kafka_protocol-4.2.8`. Fixed build speed and link issue for crc32c.
 
