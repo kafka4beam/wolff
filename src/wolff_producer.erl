@@ -492,6 +492,8 @@ handle_kafka_ack(#kpro_rsp{api = produce,
       do_handle_kafka_ack(Ref, BaseOffset, St, normal);
     ?message_too_large ->
       do_handle_kafka_ack(Ref, BaseOffset, St, ?message_too_large);
+    ?record_list_too_large ->
+      do_handle_kafka_ack(Ref, BaseOffset, St, ?record_list_too_large);
     _ ->
       #{topic := Topic, partition := Partition} = St,
       log_warn(Topic, Partition, "Produce response error-code = ~0p", [ErrorCode]),
@@ -503,16 +505,20 @@ do_handle_kafka_ack(Ref, BaseOffset, #{sent_reqs := SentReqs } = St, Reason) ->
     {value, ?sent_req(#kpro_req{ref = Ref}, Q_AckRef, Calls)} ->
       %% this clause is kept only to be hot-upgrade safe
       clear_sent_and_ack_callers(Q_AckRef, Calls, BaseOffset, St);
-    {value, ?sent_items(Ref, Items, Q_AckRef)} when Reason =:= ?message_too_large ->
+    {value, ?sent_items(Ref, Items, Q_AckRef)} when Reason =:= ?message_too_large orelse Reason =:= ?record_list_too_large ->
       case Items of
         [?Q_ITEM(_CallId, _Ts, Batch)] ->
           %% This is one call, but it's still too large
           #{topic := Topic, partition := Partition} = St,
           #kpro_req{msg = IoData} = make_request(Items, St),
           EncodedBytes = iolist_size(IoData),
-          log_error(Topic, Partition, "One request is dropped due to message_too_large! "
-                    "This single-request includes ~p message(s), and encoded to ~p bytes. "
-                    "Please consider increasing max.message.bytes on the server side!",
+          Hint = case Reason of
+            ?message_too_large ->
+              "Consider increasing server side topic config 'max.message.bytes'!";
+            ?record_list_too_large ->
+              "Cnosider increasing server side topic config 'segment.bytes'!"
+          end,
+          log_error(Topic, Partition, "Produce request dropped (with ~w messages encoded to ~w bytes). " ++ Hint,
                     [length(Batch), EncodedBytes]),
           Calls = get_calls_from_queue_items(Items),
           clear_sent_and_ack_callers(Q_AckRef, Calls, ?message_too_large, St);
