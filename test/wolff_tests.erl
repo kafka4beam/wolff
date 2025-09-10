@@ -445,7 +445,10 @@ test_leader_restart() ->
   end).
 
 with_topic(Topic, Partitions, ReplicationFactor, MaxMessageBytes, TestFunc) ->
-  ok = create_topic(Topic, Partitions, ReplicationFactor, MaxMessageBytes),
+    with_topic(Topic, Partitions, ReplicationFactor, MaxMessageBytes, default_sgement_bytes, TestFunc).
+
+with_topic(Topic, Partitions, ReplicationFactor, MaxMessageBytes, SegmentBytes, TestFunc) ->
+  ok = create_topic(Topic, Partitions, ReplicationFactor, MaxMessageBytes, SegmentBytes),
   try
     _ = application:stop(wolff), %% ensure stopped
     {ok, _} = application:ensure_all_started(wolff),
@@ -454,23 +457,13 @@ with_topic(Topic, Partitions, ReplicationFactor, MaxMessageBytes, TestFunc) ->
     ok = delete_topic(Topic)
   end.
 
-
-message_too_large_test_() ->
-  {timeout, 60,
-   fun() -> test_message_too_large() end}.
-
-test_message_too_large() ->
-  Topic = "message-too-large-" ++ integer_to_list(abs(erlang:monotonic_time())),
-  Partitions = 1,
-  ReplicationFactor = 1,
-  MaxMessageBytes = 100,
-  with_topic(Topic, Partitions, ReplicationFactor, MaxMessageBytes, fun() ->
+test_batch_split_then_drop(Topic, MaxMessageBytes) ->
     ClientCfg = client_config(),
     ClientId = iolist_to_binary("client-" ++ Topic),
     {ok, Client} = start_client(ClientId, ?HOSTS, ClientCfg#{connection_strategy => per_partition}),
     TopicBin = iolist_to_binary(Topic),
     %% try to batch more messages than Kafka's limit,
-    %% the producer will get message_too_large error back
+    %% the producer will get message_too_large or record_list_too_large error back
     %% then it should retry sending one message at a time
     ProducerCfg = #{partitioner => fun(_, _) -> 0 end,
                     max_batch_bytes => MaxMessageBytes * 3,
@@ -504,8 +497,38 @@ test_message_too_large() ->
     ?assertEqual(message_too_large, (SendFunc([Msg(<<"0123456789">>)]))()),
     ok = wolff:stop_producers(Producers),
     ok = stop_client(Client),
-    ok = application:stop(wolff)
-  end).
+    ok = application:stop(wolff).
+
+%% Max message size is smaller than segment bytes to tigger record_list_too_large error.
+%% This is usually a bad server/topic configuration, but we need to cover it anyways.
+record_list_too_large_test_() ->
+  {timeout, 60,
+   fun() -> test_record_list_too_large() end}.
+
+test_record_list_too_large() ->
+  Topic = "record-list-too-large-" ++ integer_to_list(abs(erlang:monotonic_time())),
+  Partitions = 1,
+  ReplicationFactor = 1,
+  MaxMessageBytes = 1000,
+  SegmentBytes = 100,
+  with_topic(Topic, Partitions, ReplicationFactor, MaxMessageBytes, SegmentBytes,
+    fun() ->
+      test_batch_split_then_drop(Topic, SegmentBytes)
+    end).
+
+message_too_large_test_() ->
+  {timeout, 60,
+   fun() -> test_message_too_large() end}.
+
+test_message_too_large() ->
+  Topic = "message-too-large-" ++ integer_to_list(abs(erlang:monotonic_time())),
+  Partitions = 1,
+  ReplicationFactor = 1,
+  MaxMessageBytes = 100,
+  with_topic(Topic, Partitions, ReplicationFactor, MaxMessageBytes,
+    fun() ->
+      test_batch_split_then_drop(Topic, MaxMessageBytes)
+    end).
 
 one_byte_limit_test() ->
   Topic = "one-byte-limit-" ++ integer_to_list(abs(erlang:monotonic_time())),
@@ -616,8 +639,8 @@ encoded_bytes(Batch) ->
   Encoded = kpro_batch:encode(2, Batch, no_compression),
   iolist_size(Encoded).
 
-create_topic(Topic, Partitions, ReplicationFactor, MaxMessageBytes) ->
-  Cmd = create_topic_cmd(Topic, Partitions, ReplicationFactor, MaxMessageBytes),
+create_topic(Topic, Partitions, ReplicationFactor, MaxMessageBytes, SegmentBytes) ->
+  Cmd = create_topic_cmd(Topic, Partitions, ReplicationFactor, MaxMessageBytes, SegmentBytes),
   Result = os:cmd(Cmd),
   Expected = "Created topic " ++ Topic ++ ".\n",
   ?assertEqual(Expected, Result),
@@ -631,7 +654,7 @@ delete_topic(Topic) ->
     _ -> throw(Result)
   end.
 
-create_topic_cmd(Topic, Partitions, ReplicationFactor, MaxMessageBytes) ->
+create_topic_cmd(Topic, Partitions, ReplicationFactor, MaxMessageBytes, SegmentBytes) ->
   "docker exec wolff-kafka-1 /opt/kafka/bin/kafka-topics.sh" ++
   " --zookeeper zookeeper:2181" ++
   " --create" ++
@@ -641,6 +664,12 @@ create_topic_cmd(Topic, Partitions, ReplicationFactor, MaxMessageBytes) ->
   case is_integer(MaxMessageBytes) of
     true ->
       " --config max.message.bytes=" ++ integer_to_list(MaxMessageBytes);
+    false ->
+      ""
+  end ++
+  case is_integer(SegmentBytes) of
+    true ->
+      " --config segment.bytes=" ++ integer_to_list(SegmentBytes);
     false ->
       ""
   end.
