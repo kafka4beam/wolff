@@ -614,16 +614,21 @@ note(Fmt, Args) ->
 -spec do_handle_kafka_ack(_, _, sent(), state()) -> state().
 do_handle_kafka_ack(?no_error, BaseOffset, _Sent, St) ->
   clear_sent_and_ack_callers(?no_error, BaseOffset, St);
-do_handle_kafka_ack(?message_too_large = EC, _BaseOffset, Sent, St) ->
+do_handle_kafka_ack(EC, _BaseOffset, Sent, St) when EC =:= ?message_too_large orelse EC =:= ?record_list_too_large ->
   #{topic := Topic, partition := Partition, config := Config} = St,
   #{q_items := Items} = Sent,
   #kpro_req{msg = IoData} = make_request(Items, St),
   Bytes = iolist_size(IoData),
+  Hint = case EC of
+    ?message_too_large ->
+      "Consider increasing server side topic config 'max.message.bytes'!";
+    ?record_list_too_large ->
+      "Cnosider increasing server side topic config 'segment.bytes'!"
+  end,
   case length(Items) of
     1 ->
       %% This is a single message batch, but it's still too large
-      Note = "A single-request batch is dropped because it's too large for this topic! "
-             "Consider increasing 'max.message.bytes' config on the server side!",
+      Note = "A single-request batch is dropped because it's too large for this topic! " ++ Hint,
       log_error(Topic, Partition, EC, #{note => Note, encode_bytes => Bytes}),
       wolff_metrics:dropped_inc(Config, 1),
       clear_sent_and_ack_callers(EC, EC, St);
@@ -635,10 +640,10 @@ do_handle_kafka_ack(?message_too_large = EC, _BaseOffset, Sent, St) ->
       St1 = St#{config := Config#{max_batch_bytes := NewMax}},
       Note = note("Config max_batch_bytes=~p is too large for this topic, "
                   "trying to split the current batch and retry. "
-                  "Will use max_batch_bytes=~p to collect future batches.",
+                  "Will use max_batch_bytes=~p to collect future batches. " ++ Hint,
                   [Max, NewMax]),
       log_warn(Topic, Partition, EC, #{note => Note, calls_count => N, encode_bytes => Bytes}),
-      resend_sent_reqs(St1, EC)
+      resend_sent_reqs(St1, ?message_too_large)
   end;
 do_handle_kafka_ack(ErrorCode, _BaseOffset, Sent, St) ->
   %% Other errors, such as not_leader_for_partition

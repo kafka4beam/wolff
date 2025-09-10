@@ -1,3 +1,7 @@
+* 4.0.13 (merge 1.5.19)
+  - Handle `record_list_too_large` error returned from Kafka.
+    Similar to `message_too_large`  error, the batch is split, then dropped if single call is still too large.
+
 * 4.0.12 (merge 1.5.18)
   - Partition metadata handling.
     - Fixed an issue introduced in 4.0.7 (1.5.15) where temporarily missing partitions in the metadata response could leave a `wolff_producer` process permanently disconnected.
