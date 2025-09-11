@@ -625,13 +625,16 @@ do_handle_kafka_ack(EC, _BaseOffset, Sent, St) when EC =:= ?message_too_large or
     ?record_list_too_large ->
       "Cnosider increasing server side topic config 'segment.bytes'!"
   end,
+  %% Reason to drop request or split batch is message_too_large
+  %% because record_list_too_large makes little sense for application.
+  Reason = ?message_too_large,
   case length(Items) of
     1 ->
       %% This is a single message batch, but it's still too large
       Note = "A single-request batch is dropped because it's too large for this topic! " ++ Hint,
       log_error(Topic, Partition, EC, #{note => Note, encode_bytes => Bytes}),
       wolff_metrics:dropped_inc(Config, 1),
-      clear_sent_and_ack_callers(EC, EC, St);
+      clear_sent_and_ack_callers(EC, Reason, St);
     N ->
       %% This is a batch of more than one queue items (calls)
       %% Split the batch, and re-send
@@ -643,7 +646,7 @@ do_handle_kafka_ack(EC, _BaseOffset, Sent, St) when EC =:= ?message_too_large or
                   "Will use max_batch_bytes=~p to collect future batches. " ++ Hint,
                   [Max, NewMax]),
       log_warn(Topic, Partition, EC, #{note => Note, calls_count => N, encode_bytes => Bytes}),
-      resend_sent_reqs(St1, ?message_too_large)
+      resend_sent_reqs(St1, Reason)
   end;
 do_handle_kafka_ack(ErrorCode, _BaseOffset, Sent, St) ->
   %% Other errors, such as not_leader_for_partition
