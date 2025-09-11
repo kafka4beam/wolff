@@ -889,7 +889,7 @@ test_batch_split_then_drop(Topic, MaxMessageBytes) ->
     ok = stop_client(Client),
     ok = application:stop(wolff).
 
-%% Max message size is smaller than segment bytes to tigger record_list_too_large error.
+%% Max message size is greater than segment bytes to trigger record_list_too_large error.
 %% This is usually a bad server/topic configuration, but we need to cover it anyways.
 record_list_too_large_test_() ->
   {timeout, 60,
