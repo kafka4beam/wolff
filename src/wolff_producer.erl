@@ -228,8 +228,9 @@ send_sync(Pid, Batch0, Timeout) ->
       end
   end.
 
-init(St) ->
+init(#{client_id := ClientId, topic := Topic, partition := Partition} = St) ->
   erlang:process_flag(trap_exit, true),
+  ok = set_process_label(ClientId, Topic, Partition),
   {ok, St, {continue, do_init}}.
 
 do_init(#{client_id := ClientId,
@@ -1132,6 +1133,14 @@ deref_caller(Alias) ->
 -else.
 caller() -> self().
 deref_caller(_Pid) -> ok.
+-endif.
+
+-if(?OTP_RELEASE >= 27).
+set_process_label(ClientId, Topic, Partition) ->
+    proc_lib:set_label({?MODULE, ClientId, Topic, Partition}).
+-else.
+set_process_label(_ClientId, _Topic, _Partition) ->
+    ok.
 -endif.
 
 -ifdef(TEST).
