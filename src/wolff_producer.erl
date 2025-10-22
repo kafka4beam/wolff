@@ -311,13 +311,13 @@ handle_info({msg, Conn, Rsp}, #{conn := Conn} = St0) ->
       St = maybe_send_to_kafka(St1),
       {noreply, St}
   catch
-    throw : Reason ->
+    throw : {kafka_error, Reason, St1} ->
       %% connection is not really down, but we need to
       %% stay down for a while and maybe restart sending on a new connection
       %% if Reason is not_leader_for_partition,
       %% wolff_client should expire old metadata while we are down
       %% and connect to the new leader when we request for a new connection
-      St = mark_connection_down(St0, Reason),
+      St = mark_connection_down(St1, Reason),
       {noreply, St}
   end;
 handle_info(?leader_connection(Conn), St) ->
@@ -423,13 +423,13 @@ use_defaults(Config, [{K, V} | Rest]) ->
     false -> use_defaults(Config#{K => V}, Rest)
   end.
 
-remake_requests(#{q_items := Items, attempts := Attempts} = Sent, St, ?reconnect) ->
+remake_requests(#{q_items := Items} = Sent, St, ?reconnect) ->
   #kpro_req{ref = Ref} = Req = make_request(Items, St),
-  {[Req], [Sent#{req_ref := Ref, attempts := Attempts + 1}]};
+  {[Req], [Sent#{req_ref := Ref}]};
 remake_requests(#{q_items := Items} = Sent, St, ?message_too_large) ->
   Reqs = lists:map(fun(Item) -> make_request([Item], St) end, Items),
   #{attempts := Attempts, q_ack_ref := Q_AckRef} = Sent,
-  {Reqs, make_sent_items_list(Items, Reqs, Attempts + 1, Q_AckRef)}.
+  {Reqs, make_sent_items_list(Items, Reqs, Attempts, Q_AckRef)}.
 
 %% only ack replayq when the last message is accepted by Kafka
 make_sent_items_list([LastItem], [#kpro_req{ref = Ref}], Attempts, Q_AckRef) ->
@@ -528,13 +528,13 @@ send_to_kafka(#{sent_reqs := SentReqs,
              pending_acks := NewPendingAcks
             },
   ok = request_async(Conn, Req),
-  St2 = maybe_fake_kafka_ack(NoAck, Sent, St1),
+  St2 = maybe_fake_kafka_ack(NoAck, St1),
   maybe_send_to_kafka(St2).
 
 %% when require no acks do not add to sent_reqs and ack caller immediately
-maybe_fake_kafka_ack(_NoAck = true, Sent, St) ->
-  do_handle_kafka_ack(?no_error, ?UNKNOWN_OFFSET, Sent, St);
-maybe_fake_kafka_ack(_NoAck, _Sent, St) -> St.
+maybe_fake_kafka_ack(_NoAck = true, St) ->
+  do_handle_kafka_ack(?no_error, ?UNKNOWN_OFFSET, St);
+maybe_fake_kafka_ack(_NoAck, St) -> St.
 
 is_send_ahead_allowed(#{config := #{max_send_ahead := Max},
                         sent_reqs_count := SentCount}) ->
@@ -603,9 +603,9 @@ handle_kafka_ack(#kpro_rsp{api = produce,
   ErrorCode = kpro:find(error_code, PartitionRsp),
   BaseOffset = kpro:find(base_offset, PartitionRsp),
   case queue:peek(SentReqs) of
-    {value, #{req_ref := Ref} = Sent} ->
+    {value, #{req_ref := Ref1}} when Ref1 =:= Ref ->
       %% sent_reqs queue front matched the response reference
-      do_handle_kafka_ack(ErrorCode, BaseOffset, Sent, St);
+      do_handle_kafka_ack(ErrorCode, BaseOffset, St);
     _ ->
       %% stale response e.g. when inflight > 1, but we have to retry an older req
       St
@@ -614,12 +614,12 @@ handle_kafka_ack(#kpro_rsp{api = produce,
 note(Fmt, Args) ->
   lists:flatten(io_lib:format(Fmt, Args)).
 
--spec do_handle_kafka_ack(_, _, sent(), state()) -> state().
-do_handle_kafka_ack(?no_error, BaseOffset, _Sent, St) ->
+-spec do_handle_kafka_ack(_, _, state()) -> state().
+do_handle_kafka_ack(?no_error, BaseOffset, St) ->
   clear_sent_and_ack_callers(?no_error, BaseOffset, St);
-do_handle_kafka_ack(EC, _BaseOffset, Sent, St) when EC =:= ?message_too_large orelse EC =:= ?record_list_too_large ->
-  #{topic := Topic, partition := Partition, config := Config} = St,
-  #{q_items := Items} = Sent,
+do_handle_kafka_ack(EC, _BaseOffset, St) when EC =:= ?message_too_large orelse EC =:= ?record_list_too_large ->
+  #{topic := Topic, partition := Partition, config := Config, sent_reqs := SentReqs} = St,
+  {value, #{q_items := Items}} = queue:peek(SentReqs),
   #kpro_req{msg = IoData} = make_request(Items, St),
   Bytes = iolist_size(IoData),
   Hint = case EC of
@@ -649,11 +649,14 @@ do_handle_kafka_ack(EC, _BaseOffset, Sent, St) when EC =:= ?message_too_large or
                   "Will use max_batch_bytes=~p to collect future batches. " ++ Hint,
                   [Max, NewMax]),
       log_warn(Topic, Partition, EC, #{note => Note, calls_count => N, encode_bytes => Bytes}),
+      %% We do not incement the attempt counter for too large batch
+      %% St2 = increment_attempt_for_first_sent_req(St),
       resend_sent_reqs(St1, Reason)
   end;
-do_handle_kafka_ack(ErrorCode, _BaseOffset, Sent, St) ->
+do_handle_kafka_ack(ErrorCode, _BaseOffset, St) ->
   %% Other errors, such as not_leader_for_partition
-  #{attempts := Attempts, q_items := Items} = Sent,
+  #{sent_reqs := SentReqs} = St,
+  {value, #{attempts := Attempts, q_items := Items}} = queue:peek(SentReqs),
   #{topic := Topic,
     partition := Partition,
     config := Config
@@ -664,7 +667,15 @@ do_handle_kafka_ack(ErrorCode, _BaseOffset, Sent, St) ->
            #{error_code => ErrorCode,
              batch_size => count_msgs(Items),
              attempts => Attempts}),
-  erlang:throw(ErrorCode).
+  St1 = increment_attempt(St),
+  erlang:throw({kafka_error, ErrorCode, St1}).
+
+%% Since we only handle Kafka ack for the first sent request in the sent queue
+%% we only bump the first itme with attempt counter
+increment_attempt(#{sent_reqs := SentReqs} = St) ->
+  {{value, SentReq}, SentReqs1} = queue:out(SentReqs),
+  #{attempts := Attempts} = SentReq,
+  St#{sent_reqs := queue:in_r(SentReq#{attempts := Attempts + 1}, SentReqs1)}.
 
 clear_sent_and_ack_callers(ErrorCode, BaseOffset, St) ->
   #{sent_reqs := SentReqs,
@@ -1020,11 +1031,10 @@ reply_error_for_all_reqs(St, Reason) ->
   end,
   Count = wolff_pendack:fold(PendingAcks, F, 0),
   AlreadyInc = lists:foldl(
-    fun(#{attempts := 1}, Acc) ->
-      %% sent but not yet acked
+    fun(#{attempts := Attempts}, Acc) when Attempts > 1 ->
+      %% 'failed' counter is already incremented for this sent request
       Acc + 1;
     (_, Acc) ->
-      %% sent and acked with error, the failed count is already incremented
       Acc
   end, 0, queue:to_list(SentReqs)),
   inc_sent_failed(Config, Count - AlreadyInc, 1).
