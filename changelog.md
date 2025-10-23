@@ -1,3 +1,7 @@
+* 4.1.0
+  - Fix 'failed' telemetry counter double-increment due to race condition. [#102](https://github.com/kafka4beam/wolff/pull/102)
+  - Added producer process label `{wolff_producer, KafkaClientId, Topic, Partition}` [#102](https://github.com/kafka4beam/wolff/pull/102)
+
 * 4.0.13 (merge 1.5.19)
   - Handle `record_list_too_large` error returned from Kafka.
     Similar to `message_too_large`  error, the batch is split, then dropped if single call is still too large.
