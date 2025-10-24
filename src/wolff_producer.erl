@@ -423,27 +423,32 @@ use_defaults(Config, [{K, V} | Rest]) ->
     false -> use_defaults(Config#{K => V}, Rest)
   end.
 
-remake_requests(#{q_items := Items} = Sent, St, ?reconnect) ->
-  #kpro_req{ref = Ref} = Req = make_request(Items, St),
-  {[Req], [Sent#{req_ref := Ref}]};
-remake_requests(#{q_items := Items} = Sent, St, ?message_too_large) ->
-  Reqs = lists:map(fun(Item) -> make_request([Item], St) end, Items),
+resend_requests(#{q_items := Items} = Sent, St, ?reconnect) ->
+  {ok, Ref} = send_request(Items, St),
+  [Sent#{req_ref := Ref}];
+resend_requests(#{q_items := Items} = Sent, St, ?message_too_large) ->
+  Refs = lists:map(fun(Item) -> {ok, Ref} = send_request([Item], St), Ref end, Items),
   #{attempts := Attempts, q_ack_ref := Q_AckRef} = Sent,
-  {Reqs, make_sent_items_list(Items, Reqs, Attempts, Q_AckRef)}.
+  make_sent_items_list(Items, Refs, Attempts, Q_AckRef).
 
 %% only ack replayq when the last message is accepted by Kafka
-make_sent_items_list([LastItem], [#kpro_req{ref = Ref}], Attempts, Q_AckRef) ->
+make_sent_items_list([LastItem], [Ref], Attempts, Q_AckRef) ->
   [#{req_ref => Ref,
      q_items => [LastItem],
      q_ack_ref => Q_AckRef,
      attempts => Attempts
     }];
-make_sent_items_list([Item | Items], [#kpro_req{ref = Ref} | Reqs], Attempts, Q_AckRef) ->
+make_sent_items_list([Item | Items], [Ref | Refs], Attempts, Q_AckRef) ->
   [#{req_ref => Ref,
      q_items => [Item],
      q_ack_ref => ?no_queue_ack,
      attempts => Attempts
-    } | make_sent_items_list(Items, Reqs, Attempts, Q_AckRef)].
+    } | make_sent_items_list(Items, Refs, Attempts, Q_AckRef)].
+
+send_request(QueueItems, #{conn := Conn} = St) ->
+  #kpro_req{ref = Ref} = Req = make_request(QueueItems, St),
+  ok = request_async(Conn, Req),
+  {ok, Ref}.
 
 make_request(QueueItems,
              #{config := #{required_acks := RequiredAcks,
@@ -461,13 +466,11 @@ make_request(QueueItems,
                         }).
 
 resend_sent_reqs(#{sent_reqs := SentReqs,
-                   conn := Conn,
                    config := Config
                   } = St, Reason) ->
   F = fun(Sent, Acc) ->
           wolff_metrics:retried_inc(Config, 1),
-          {Reqs, NewSentList} = remake_requests(Sent, St, Reason),
-          lists:foreach(fun(Req) -> ok = request_async(Conn, Req) end, Reqs),
+          NewSentList = resend_requests(Sent, St, Reason),
           lists:reverse(NewSentList, Acc)
       end,
   NewSentReqs = lists:foldl(F, [], queue:to_list(SentReqs)),
@@ -620,8 +623,8 @@ do_handle_kafka_ack(?no_error, BaseOffset, St) ->
 do_handle_kafka_ack(EC, _BaseOffset, St) when EC =:= ?message_too_large orelse EC =:= ?record_list_too_large ->
   #{topic := Topic, partition := Partition, config := Config, sent_reqs := SentReqs} = St,
   {value, #{q_items := Items}} = queue:peek(SentReqs),
-  #kpro_req{msg = IoData} = make_request(Items, St),
-  Bytes = iolist_size(IoData),
+  Batch = get_batch_from_queue_items(Items),
+  Bytes = batch_bytes(Batch),
   Hint = case EC of
     ?message_too_large ->
       "Consider increasing server side topic config 'max.message.bytes'!";
@@ -635,7 +638,7 @@ do_handle_kafka_ack(EC, _BaseOffset, St) when EC =:= ?message_too_large orelse E
     1 ->
       %% This is a single message batch, but it's still too large
       Note = "A single-request batch is dropped because it's too large for this topic! " ++ Hint,
-      log_error(Topic, Partition, EC, #{note => Note, encode_bytes => Bytes}),
+      log_error(Topic, Partition, EC, #{note => Note, estimated_batch_bytes => Bytes}),
       wolff_metrics:dropped_inc(Config, 1),
       clear_sent_and_ack_callers(EC, Reason, St);
     N ->

@@ -1030,8 +1030,8 @@ batch_bytes(Batch) ->
   wolff_producer:batch_bytes(Batch).
 
 encoded_bytes(Batch) ->
-  Encoded = kpro_batch:encode(2, Batch, no_compression),
-  iolist_size(Encoded).
+  {Bytes, _Encoded} = kpro_batch:encode(2, Batch, no_compression),
+  Bytes.
 
 create_topic(Topic, Partitions, ReplicationFactor, MaxMessageBytes, SegmentBytes) ->
   Cmd = create_topic_cmd(Topic, Partitions, ReplicationFactor, MaxMessageBytes, SegmentBytes),
