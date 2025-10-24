@@ -623,8 +623,8 @@ do_handle_kafka_ack(?no_error, BaseOffset, St) ->
 do_handle_kafka_ack(EC, _BaseOffset, St) when EC =:= ?message_too_large orelse EC =:= ?record_list_too_large ->
   #{topic := Topic, partition := Partition, config := Config, sent_reqs := SentReqs} = St,
   {value, #{q_items := Items}} = queue:peek(SentReqs),
-  #kpro_req{msg = IoData} = make_request(Items, St),
-  Bytes = iolist_size(IoData),
+  Batch = get_batch_from_queue_items(Items),
+  Bytes = batch_bytes(Batch),
   Hint = case EC of
     ?message_too_large ->
       "Consider increasing server side topic config 'max.message.bytes'!";
@@ -638,7 +638,7 @@ do_handle_kafka_ack(EC, _BaseOffset, St) when EC =:= ?message_too_large orelse E
     1 ->
       %% This is a single message batch, but it's still too large
       Note = "A single-request batch is dropped because it's too large for this topic! " ++ Hint,
-      log_error(Topic, Partition, EC, #{note => Note, encode_bytes => Bytes}),
+      log_error(Topic, Partition, EC, #{note => Note, estimated_batch_bytes => Bytes}),
       wolff_metrics:dropped_inc(Config, 1),
       clear_sent_and_ack_callers(EC, Reason, St);
     N ->
