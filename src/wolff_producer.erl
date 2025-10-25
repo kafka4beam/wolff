@@ -504,7 +504,6 @@ send_to_kafka(#{sent_reqs := SentReqs,
                 replayq := Q,
                 config := #{required_acks := RequiredAcks,
                             max_batch_bytes := BytesLimit} = Config,
-                conn := Conn,
                 pending_acks := PendingAcks
                } = St0) ->
   {NewQ, QAckRef, Items} =
@@ -518,7 +517,7 @@ send_to_kafka(#{sent_reqs := SentReqs,
   NewInflightCalls = InflightCalls + NrOfCalls,
   _ = wolff_metrics:inflight_set(Config, NewInflightCalls),
   NoAck = (RequiredAcks =:= none),
-  #kpro_req{ref = Ref} = Req = make_request(Items, St0),
+  {ok, Ref} = send_request(Items, St0),
   Sent = #{req_ref => Ref,
            q_items => Items,
            q_ack_ref => QAckRef,
@@ -530,7 +529,6 @@ send_to_kafka(#{sent_reqs := SentReqs,
              inflight_calls := NewInflightCalls,
              pending_acks := NewPendingAcks
             },
-  ok = request_async(Conn, Req),
   St2 = maybe_fake_kafka_ack(NoAck, St1),
   maybe_send_to_kafka(St2).
 
