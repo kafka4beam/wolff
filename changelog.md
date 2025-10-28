@@ -2,6 +2,7 @@
   - Fix 'failed' telemetry counter double-increment due to race condition. [#102](https://github.com/kafka4beam/wolff/pull/102)
   - Added producer process label `{wolff_producer, KafkaClientId, Topic, Partition}` [#102](https://github.com/kafka4beam/wolff/pull/102)
   - Upgrade to `kafka_protocol-4.2.9` for better CRC32C performance.
+  - Add client config `allow_auto_topic_creation` (default = false).
 
 * 4.0.13 (merge 1.5.19)
   - Handle `record_list_too_large` error returned from Kafka.
