@@ -80,7 +80,7 @@ t_recv_leader_connection_with_auto_create_retry_success(Config) ->
     wolff_client:recv_leader_connection(Client, ?NO_GROUP, Topic, 0, self(), ?all_partitions),
     receive
       {leader_connection, Pid} when is_pid(Pid) ->
-        ?assert(is_pid(Pid));
+        true;
       {leader_connection, {down, Reason}} ->
         %% May get error if topic doesn't exist on real Kafka
         ?assertNotEqual(undefined, Reason)
@@ -141,24 +141,3 @@ client_config_with_auto_create() ->
   #{allow_auto_topic_creation => true,
     request_timeout => 2000
    }.
-
-client_config_without_auto_create() ->
-  #{allow_auto_topic_creation => false,
-    request_timeout => 1000
-   }.
-
-%% Helper function for meck mocking (similar to pattern used in other test files)
-with_meck(Mod, FnName, MockedFn, Action) ->
-  ok = meck:new(Mod, [non_strict, no_history, no_link, passthrough]),
-  ok = meck:expect(Mod, FnName, MockedFn),
-  try
-    Action()
-  after
-    meck:unload(Mod)
-  end.
-
-%% Helper function to create a mock connection for testing
-mock_connection() ->
-  %% Create a mock connection that can be used in tests
-  %% This is a simplified mock - in real tests you might want to use a more sophisticated mock
-  {mock_connection, self()}.

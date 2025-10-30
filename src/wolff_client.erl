@@ -401,7 +401,7 @@ ensure_leader_connections2(#{metadata_conn := Pid,
                              conn_config := ConnConfig,
                              config := Config
                             } = St, Group, Topic, MaxPartitions) when is_pid(Pid) ->
-  Timeout = maps:get(request_timeout, ConnConfig, ?DEFAULT_METADATA_TIMEOUT),
+  Timeout = metadata_request_timeout(ConnConfig),
   IsAutoCreateAllowed = maps:get(allow_auto_topic_creation, Config, false),
   case do_get_metadata(Pid, Topic, Timeout, IsAutoCreateAllowed) of
     {ok, {Brokers, PartitionMetaList}} ->
@@ -596,7 +596,7 @@ get_metadata([], _ConnConfig, _Topic, _IsAutoCreateAllowed, Errors) ->
 get_metadata([Host | Rest], ConnConfig, Topic, IsAutoCreateAllowed, Errors) ->
   case do_connect(Host, ConnConfig) of
     {ok, Pid} ->
-      Timeout = maps:get(request_timeout, ConnConfig, ?DEFAULT_METADATA_TIMEOUT),
+      Timeout = metadata_request_timeout(ConnConfig),
       case do_get_metadata(Pid, Topic, Timeout, IsAutoCreateAllowed) of
         {ok, Result} ->
           {ok, {Pid, Result}};
@@ -770,3 +770,10 @@ bin(X) ->
         {error, _} -> bin(io_lib:format("~0p", [X]));
         Addr -> bin(Addr)
     end.
+
+metadata_request_timeout(#{request_timeout := infinity}) ->
+  ?DEFAULT_METADATA_TIMEOUT * 3;
+metadata_request_timeout(#{request_timeout := Timeout}) ->
+  Timeout;
+metadata_request_timeout(_) ->
+  ?DEFAULT_METADATA_TIMEOUT.
