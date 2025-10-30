@@ -129,7 +129,7 @@ check_connectivity(Hosts, ConnConfig) when Hosts =/= [] ->
 -spec check_if_topic_exists([host()], kpro:conn_config(), topic()) ->
         ok | {error, unknown_topic_or_partition | [#{host := binary(), reason := term()}] | any()}.
 check_if_topic_exists(Hosts, ConnConfig, Topic) when Hosts =/= [] ->
-  case get_metadata(Hosts, ConnConfig, Topic) of
+  case get_metadata(Hosts, ConnConfig, Topic, _IsAutoCreateAllowed = false) of
     {ok, {Pid, _}} ->
       ok = close_connection(Pid);
     {error, Errors} ->
@@ -148,7 +148,10 @@ safe_call(Pid, Call) ->
   catch exit : Reason -> {error, Reason}
   end.
 
-%% request client to send Pid the leader connection.
+%% @doc request client to send Pid the leader connection.
+%% The caller will receive message `{leader_connection, Pid}' if the leader is successfully connected,
+%% otherwise `{leader_connection, {down, Reason}}'.
+-spec recv_leader_connection(pid(), ?NO_GROUP | producer_group(), topic(), partition(), pid(), all_partitions | pos_integer()) -> ok.
 recv_leader_connection(Client, Group, Topic, Partition, Caller, MaxPartitions) ->
   gen_server:cast(Client, {recv_leader_connection, Group, Topic, Partition, Caller, MaxPartitions}).
 
@@ -288,7 +291,7 @@ ensure_metadata_conn(#{seed_hosts := Hosts, conn_config := ConnConfig, metadata_
   end.
 
 check_if_topic_exists2(Pid, Topic, Timeout) when is_pid(Pid) ->
-  case do_get_metadata(Pid, Topic, Timeout) of
+  case do_get_metadata(Pid, Topic, Timeout, _IsAutoCreateAllowed = false) of
     {ok, _} ->
       ok;
     {error, Reason} ->
@@ -394,9 +397,13 @@ ensure_leader_connections(St, Group, Topic, MaxPartitions) ->
 
 -spec ensure_leader_connections2(state(), producer_group(), topic(), max_partitions()) ->
           {ok, state()} | {error, term()}.
-ensure_leader_connections2(#{metadata_conn := Pid, conn_config := ConnConfig} = St, Group, Topic, MaxPartitions) when is_pid(Pid) ->
-  Timeout = maps:get(request_timeout, ConnConfig, ?DEFAULT_METADATA_TIMEOUT),
-  case do_get_metadata(Pid, Topic, Timeout) of
+ensure_leader_connections2(#{metadata_conn := Pid,
+                             conn_config := ConnConfig,
+                             config := Config
+                            } = St, Group, Topic, MaxPartitions) when is_pid(Pid) ->
+  Timeout = metadata_request_timeout(ConnConfig),
+  IsAutoCreateAllowed = maps:get(allow_auto_topic_creation, Config, false),
+  case do_get_metadata(Pid, Topic, Timeout, IsAutoCreateAllowed) of
     {ok, {Brokers, PartitionMetaList}} ->
       ensure_leader_connections3(St, Group, Topic, Pid, Brokers, PartitionMetaList, MaxPartitions);
     {error, _Reason} ->
@@ -406,8 +413,11 @@ ensure_leader_connections2(#{metadata_conn := Pid, conn_config := ConnConfig} = 
       ensure_leader_connections2(St#{metadata_conn => down}, Group, Topic, MaxPartitions)
   end;
 ensure_leader_connections2(#{conn_config := ConnConfig,
-                             seed_hosts := SeedHosts} = St, Group, Topic, MaxPartitions) ->
-  case get_metadata(SeedHosts, ConnConfig, Topic, []) of
+                             seed_hosts := SeedHosts,
+                             config := Config
+                            } = St, Group, Topic, MaxPartitions) ->
+  IsAutoCreateAllowed = maps:get(allow_auto_topic_creation, Config, false),
+  case get_metadata(SeedHosts, ConnConfig, Topic, IsAutoCreateAllowed, []) of
     {ok, {ConnPid, {Brokers, PartitionMetaList}}} ->
       ensure_leader_connections3(St, Group, Topic, ConnPid, Brokers, PartitionMetaList, MaxPartitions);
     {error, unknown_topic_or_partition} ->
@@ -572,22 +582,22 @@ split_config(Config) ->
   {ConnCfg, MyCfg} = lists:partition(Pred, maps:to_list(Config)),
   {maps:from_list(ConnCfg), maps:from_list(MyCfg)}.
 
--spec get_metadata([_Host], _ConnConfig, topic()) ->
+-spec get_metadata([_Host], _ConnConfig, topic(), boolean()) ->
           {ok, {pid(), term()}} | {error, term()}.
-get_metadata(Hosts, _ConnectFun, _Topic) when Hosts =:= [] ->
+get_metadata(Hosts, _ConnectFun, _Topic, _IsAutoCreateAllowed) when Hosts =:= [] ->
   {error, no_hosts};
-get_metadata(Hosts, ConnectFun, Topic) ->
-  get_metadata(Hosts, ConnectFun, Topic, []).
+get_metadata(Hosts, ConnectFun, Topic, IsAutoCreateAllowed) ->
+  get_metadata(Hosts, ConnectFun, Topic, IsAutoCreateAllowed, []).
 
--spec get_metadata([_Host], _ConnConfig, topic(), [Error]) ->
+-spec get_metadata([_Host], _ConnConfig, topic(), boolean(), [Error]) ->
           {ok, {pid(), term()}} | {error, [Error] | term()}.
-get_metadata([], _ConnConfig, _Topic, Errors) ->
+get_metadata([], _ConnConfig, _Topic, _IsAutoCreateAllowed, Errors) ->
   {error, Errors};
-get_metadata([Host | Rest], ConnConfig, Topic, Errors) ->
+get_metadata([Host | Rest], ConnConfig, Topic, IsAutoCreateAllowed, Errors) ->
   case do_connect(Host, ConnConfig) of
     {ok, Pid} ->
-      Timeout = maps:get(request_timeout, ConnConfig, ?DEFAULT_METADATA_TIMEOUT),
-      case do_get_metadata(Pid, Topic, Timeout) of
+      Timeout = metadata_request_timeout(ConnConfig),
+      case do_get_metadata(Pid, Topic, Timeout, IsAutoCreateAllowed) of
         {ok, Result} ->
           {ok, {Pid, Result}};
         {error, Reason} ->
@@ -596,23 +606,55 @@ get_metadata([Host | Rest], ConnConfig, Topic, Errors) ->
           {error, Reason}
       end;
     {error, Reason} ->
-      get_metadata(Rest, ConnConfig, Topic, [Reason | Errors])
+      get_metadata(Rest, ConnConfig, Topic, IsAutoCreateAllowed, [Reason | Errors])
   end.
 
--spec do_get_metadata(connection(), topic(), timeout()) ->
+-spec do_get_metadata(connection(), topic(), timeout(), boolean()) ->
           {ok, {_Brokers, _Partitions}} | {error, term()}.
-do_get_metadata(Connection, Topic, Timeout) ->
+do_get_metadata(Connection, Topic, Timeout, IsAutoCreateAllowed) ->
   case kpro:get_api_versions(Connection) of
     {ok, Vsns} ->
       {_, Vsn} = maps:get(metadata, Vsns),
-      do_get_metadata2(Vsn, Connection, Topic, Timeout);
+      do_get_metadata2(Vsn, Connection, Topic, Timeout, IsAutoCreateAllowed);
     {error, Reason} ->
       {error, Reason}
   end.
 
--spec do_get_metadata2(_Vsn, connection(), topic(), timeout()) -> {ok, {_, _}} | {error, term()}.
-do_get_metadata2(Vsn, Connection, Topic, Timeout) ->
-  Req = kpro_req_lib:metadata(Vsn, [Topic], _IsAutoCreateAllowed = false),
+-spec retry(fun(() -> {ok, term()} | {error, term()}), timeout()) -> {ok, term()} | {error, term()}.
+retry(Fun, Timeout) ->
+  Deadline = erlang:monotonic_time(millisecond) + Timeout,
+  retry_loop(Fun, Deadline).
+
+-spec retry_loop(fun(() -> {ok, term()} | {error, term()}), integer()) -> {ok, term()} | {error, term()}.
+retry_loop(Fun, Deadline) ->
+  case Fun() of
+    {ok, Result} ->
+      {ok, Result};
+    {error, R} when R =:= unknown_topic_or_partition orelse R =:= leader_not_available ->
+      CurrentTime = erlang:monotonic_time(millisecond),
+      case CurrentTime >= Deadline of
+        true ->
+          {error, timeout};
+        false ->
+          %% Sleep for a short interval before retrying
+          RemainingTime = Deadline - CurrentTime,
+          SleepTime = min(1000, RemainingTime),
+          timer:sleep(SleepTime),
+          retry_loop(Fun, Deadline)
+      end;
+    {error, Reason} ->
+      {error, Reason}
+  end.
+
+-spec do_get_metadata2(_Vsn, connection(), topic(), timeout(), boolean()) -> {ok, {_, _}} | {error, term()}.
+do_get_metadata2(Vsn, Connection, Topic, Timeout, _IsAutoCreateAllowed = true) ->
+  retry(fun() -> do_get_metadata3(Vsn, Connection, Topic, Timeout, true) end, Timeout);
+do_get_metadata2(Vsn, Connection, Topic, Timeout, _IsAutoCreateAllowed = false) ->
+  do_get_metadata3(Vsn, Connection, Topic, Timeout, false).
+
+-spec do_get_metadata3(_Vsn, connection(), topic(), timeout(), boolean()) -> {ok, {_, _}} | {error, term()}.
+do_get_metadata3(Vsn, Connection, Topic, Timeout, IsAutoCreateAllowed) ->
+  Req = kpro_req_lib:metadata(Vsn, [Topic], IsAutoCreateAllowed),
   case kpro:request_sync(Connection, Req, Timeout) of
     {ok, #kpro_rsp{msg = Meta}} ->
       BrokersMeta = kpro:find(brokers, Meta),
@@ -671,7 +713,7 @@ parse_broker_meta(BrokerMeta) ->
   Port = kpro:find(port, BrokerMeta),
   {BrokerId, {Host, Port}}.
 
-log_warn(Msg, Report) -> logger:warning(Report#{msg => Msg}).
+log_warn(Msg, Report) -> logger:warning(Report#{msg => Msg, pid => self()}).
 
 do_connect(Host, ConnConfig) ->
     case kpro:connect(Host, ConnConfig) of
@@ -728,3 +770,10 @@ bin(X) ->
         {error, _} -> bin(io_lib:format("~0p", [X]));
         Addr -> bin(Addr)
     end.
+
+metadata_request_timeout(#{request_timeout := infinity}) ->
+  ?DEFAULT_METADATA_TIMEOUT * 3;
+metadata_request_timeout(#{request_timeout := Timeout}) ->
+  Timeout;
+metadata_request_timeout(_) ->
+  ?DEFAULT_METADATA_TIMEOUT.
