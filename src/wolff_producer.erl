@@ -127,6 +127,7 @@
                   , inflight_calls := non_neg_integer()
                   , topic := topic()
                   , calls := ?EMPTY | calls()
+                  , sender => pid()
                   }.
 
 %% @doc Start a per-partition producer worker.
@@ -231,7 +232,8 @@ send_sync(Pid, Batch0, Timeout) ->
 init(#{client_id := ClientId, topic := Topic, partition := Partition} = St) ->
   erlang:process_flag(trap_exit, true),
   ok = set_process_label(ClientId, Topic, Partition),
-  {ok, St, {continue, do_init}}.
+  {ok, Sender} = wolff_sender:start_link(self(), ClientId, Topic, Partition),
+  {ok, St#{sender => Sender}, {continue, do_init}}.
 
 do_init(#{client_id := ClientId,
           topic := Topic,
@@ -423,10 +425,12 @@ use_defaults(Config, [{K, V} | Rest]) ->
     false -> use_defaults(Config#{K => V}, Rest)
   end.
 
-resend_requests(#{q_items := Items} = Sent, St, ?reconnect) ->
+resend_requests(#{q_items := Items, req_ref := {alias, OldRef}} = Sent, St, ?reconnect) ->
+  erlang:unalias(OldRef),
   {ok, Ref} = send_request(Items, St),
   [Sent#{req_ref := Ref}];
-resend_requests(#{q_items := Items} = Sent, St, ?message_too_large) ->
+resend_requests(#{q_items := Items, req_ref := {alias, OldRef}} = Sent, St, ?message_too_large) ->
+  erlang:unalias(OldRef),
   Refs = lists:map(fun(Item) -> {ok, Ref} = send_request([Item], St), Ref end, Items),
   #{attempts := Attempts, q_ack_ref := Q_AckRef} = Sent,
   make_sent_items_list(Items, Refs, Attempts, Q_AckRef).
@@ -445,25 +449,25 @@ make_sent_items_list([Item | Items], [Ref | Refs], Attempts, Q_AckRef) ->
      attempts => Attempts
     } | make_sent_items_list(Items, Refs, Attempts, Q_AckRef)].
 
-send_request(QueueItems, #{conn := Conn} = St) ->
-  #kpro_req{ref = Ref} = Req = make_request(QueueItems, St),
-  ok = request_async(Conn, Req),
-  {ok, Ref}.
-
-make_request(QueueItems,
+send_request(QueueItems,
              #{config := #{required_acks := RequiredAcks,
                            ack_timeout := AckTimeout,
                            compression := Compression
                           },
                produce_api_vsn := Vsn,
                topic := Topic,
-               partition := Partition}) ->
+               partition := Partition,
+               conn := Conn,
+               sender := Sender
+              }) ->
   Batch = get_batch_from_queue_items(QueueItems),
-  kpro_req_lib:produce(Vsn, Topic, Partition, Batch,
-                       #{ack_timeout => AckTimeout,
-                         required_acks => RequiredAcks,
-                         compression => Compression
-                        }).
+  Opts = #{ack_timeout => AckTimeout,
+           required_acks => RequiredAcks,
+           compression => Compression
+           },
+  Ref = {alias, erlang:alias([reply])},
+  ok = wolff_sender:do(Sender, Conn, Ref, Vsn, Topic, Partition, Batch, Opts),
+  {ok, Ref}.
 
 resend_sent_reqs(#{sent_reqs := SentReqs,
                    config := Config
@@ -504,7 +508,6 @@ send_to_kafka(#{sent_reqs := SentReqs,
                 replayq := Q,
                 config := #{required_acks := RequiredAcks,
                             max_batch_bytes := BytesLimit} = Config,
-                conn := Conn,
                 pending_acks := PendingAcks
                } = St0) ->
   {NewQ, QAckRef, Items} =
@@ -518,7 +521,7 @@ send_to_kafka(#{sent_reqs := SentReqs,
   NewInflightCalls = InflightCalls + NrOfCalls,
   _ = wolff_metrics:inflight_set(Config, NewInflightCalls),
   NoAck = (RequiredAcks =:= none),
-  #kpro_req{ref = Ref} = Req = make_request(Items, St0),
+  {ok, Ref} = send_request(Items, St0),
   Sent = #{req_ref => Ref,
            q_items => Items,
            q_ack_ref => QAckRef,
@@ -530,7 +533,6 @@ send_to_kafka(#{sent_reqs := SentReqs,
              inflight_calls := NewInflightCalls,
              pending_acks := NewPendingAcks
             },
-  ok = request_async(Conn, Req),
   St2 = maybe_fake_kafka_ack(NoAck, St1),
   maybe_send_to_kafka(St2).
 
@@ -875,9 +877,6 @@ varint_bytes(N) -> vb(zz(N)).
 %% zigzag encode a signed integer
 -compile({inline, zz/1}).
 zz(I) -> (I bsl 1) bxor (I bsr 63).
-
-request_async(Conn, Req) when is_pid(Conn) ->
-  ok = kpro:send(Conn, Req).
 
 %% collect send calls which are already sent to mailbox,
 %% the collection is size-limited by the max_linger_bytes config.
