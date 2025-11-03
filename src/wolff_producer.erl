@@ -920,13 +920,20 @@ ensure_linger_expire_timer_cancel(#{?linger_expire_timer := LTimer} = St) ->
   St#{?linger_expire_timer => false}.
 
 %% check if the call collection should continue to linger before enqueue
-is_linger_continue(#{calls := Calls, config := Config}) ->
-  #{max_linger_ms := MaxLingerMs, max_linger_bytes := MaxLingerBytes} = Config,
-  #{ts := Ts, bytes := Bytes} = Calls,
-  case Bytes < MaxLingerBytes of
+is_linger_continue(#{config := #{max_linger_ms := 0}}) ->
+  false;
+is_linger_continue(#{calls := Calls, config := Config, replayq := Q}) ->
+  case replayq:is_writing_to_disk(Q) of
     true ->
-      TimeLeft = MaxLingerMs - (now_ts() - Ts),
-      (TimeLeft > 0) andalso {true, TimeLeft};
+      #{max_linger_ms := MaxLingerMs, max_linger_bytes := MaxLingerBytes} = Config,
+      #{ts := Ts, bytes := Bytes} = Calls,
+      case Bytes < MaxLingerBytes of
+        true ->
+          TimeLeft = MaxLingerMs - (now_ts() - Ts),
+          (TimeLeft > 0) andalso {true, TimeLeft};
+        false ->
+          false
+      end;
     false ->
       false
   end.

@@ -1,3 +1,9 @@
+* 4.1.1
+  - Do not linger before enqueue when queue is not on disk.
+    Since 4.0.0, the linger is moved from after the queue to before the queue to optimize IOPS in disk mode.
+    This however added unnecessary delay for memory (or offload mode before disk).
+    Now linger happens only when wirting to disk.
+
 * 4.1.0
   - Fix 'failed' telemetry counter double-increment due to race condition. [#102](https://github.com/kafka4beam/wolff/pull/102)
   - Added producer process label `{wolff_producer, KafkaClientId, Topic, Partition}` [#102](https://github.com/kafka4beam/wolff/pull/102)
