@@ -512,7 +512,8 @@ replayq_overflow_test() ->
                   replayq_max_total_bytes => BatchSize,
                   required_acks => all_isr,
                   max_linger_ms => LingerMs, %% delay enqueue
-                  max_linger_bytes => BatchSize + 1 %% delay enqueue
+                  max_linger_bytes => BatchSize + 1, %% delay enqueue
+                  replayq_dir => "test-data/overlow"
                  },
   {ok, Producers} = wolff:start_producers(Client, <<"test-topic">>, ProducerCfg),
   Pid = wolff_producers:lookup_producer(Producers, 0),
@@ -577,7 +578,6 @@ replayq_highmem_overflow_test() ->
   ProducerCfg = #{max_batch_bytes => 1, %% make sure not collecting calls into one batch
                   replayq_max_total_bytes => BatchSize*1000,
                   required_acks => all_isr,
-                  max_linger_ms => 1000, %% do not send to kafka immediately
                   drop_if_highmem => true
                  },
   {ok, Producers} = wolff:start_producers(Client, <<"test-topic">>, ProducerCfg),
@@ -664,7 +664,7 @@ mem_only_replayq_test() ->
 recover_from_replayq_test() ->
   ClientCfg = client_config(),
   {ok, Client} = start_client(<<"client-2">>, ?HOSTS, ClientCfg),
-  ProducerCfg = #{replayq_dir => "test-data-2"},
+  ProducerCfg = #{replayq_dir => "test-data/recover"},
   {ok, Producers} = wolff:start_producers(Client, <<"test-topic">>, ProducerCfg),
   Msg = #{key => ?KEY, value => <<"value">>},
   {0, BaseOffset} = wolff:send_sync(Producers, [Msg], 3000),
@@ -858,7 +858,8 @@ test_batch_split_then_drop(Topic, MaxMessageBytes) ->
                     %% ensure batching by delay enqueue by 100 seconds
                     max_linger_ms => 100,
                     %% ensure linger is not expired by reaching size
-                    max_linger_bytes => MaxMessageBytes * 100
+                    max_linger_bytes => MaxMessageBytes * 100,
+                    replayq_dir => "test-data/batch-split"
                    },
     {ok, Producers} = wolff:start_producers(Client, TopicBin, ProducerCfg),
     MaxBytesCompensateOverhead = MaxMessageBytes - ?BATCHING_OVERHEAD - 7,
