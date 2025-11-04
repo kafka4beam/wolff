@@ -34,6 +34,7 @@ services:
       SASL_PLAINTEXT_PORT: 9095
       ADVERTISED_HOSTNAME: ${KAFKA_1_IP}
       ZOOKEEPER_CONNECT: ${ZOOKEEPER_IP}:2181
+      AUTO_CREATE_TOPICS_ENABLE: "true"
   kafka_2:
     depends_on:
       - zookeeper
@@ -55,3 +56,4 @@ services:
       SASL_PLAINTEXT_PORT: 9095
       ADVERTISED_HOSTNAME: ${KAFKA_2_IP}
       ZOOKEEPER_CONNECT: ${ZOOKEEPER_IP}:2181
+      AUTO_CREATE_TOPICS_ENABLE: "true"

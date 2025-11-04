@@ -167,11 +167,12 @@ handle_call(Call, From, #{connect := _Fun} = St) ->
     handle_call(Call, From, upgrade(St));
 handle_call(get_id, _From, #{client_id := Id} = St) ->
   {reply, Id, St};
-handle_call({check_if_topic_exists, Topic}, _From, #{conn_config := ConnConfig} = St0) ->
+handle_call({check_if_topic_exists, Topic}, _From, #{config := Config, conn_config := ConnConfig} = St0) ->
+  IsAutoCreateAllowed = maps:get(allow_auto_topic_creation, Config, false),
   case ensure_metadata_conn(St0) of
     {ok, #{metadata_conn := ConnPid} = St} ->
       Timeout = maps:get(request_timeout, ConnConfig, ?DEFAULT_METADATA_TIMEOUT),
-      {reply, check_if_topic_exists2(ConnPid, Topic, Timeout), St};
+      {reply, check_if_topic_exists2(ConnPid, Topic, Timeout, IsAutoCreateAllowed), St};
     {error, Reason} ->
       {reply, {error, Reason}, St0}
   end;
@@ -290,8 +291,8 @@ ensure_metadata_conn(#{seed_hosts := Hosts, conn_config := ConnConfig, metadata_
       end
   end.
 
-check_if_topic_exists2(Pid, Topic, Timeout) when is_pid(Pid) ->
-  case do_get_metadata(Pid, Topic, Timeout, _IsAutoCreateAllowed = false) of
+check_if_topic_exists2(Pid, Topic, Timeout, IsAutoCreateAllowed) when is_pid(Pid) ->
+  case do_get_metadata(Pid, Topic, Timeout, IsAutoCreateAllowed) of
     {ok, _} ->
       ok;
     {error, Reason} ->

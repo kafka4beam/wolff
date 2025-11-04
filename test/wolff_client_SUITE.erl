@@ -28,6 +28,20 @@ init_per_testcase(Case, Config) ->
 end_per_testcase(Case, Config) ->
   ?MODULE:Case({'end', Config}).
 
+t_check_topic_exists_trigger_auto_creation({init, Config}) ->
+  ClientId = atom_to_binary(?FUNCTION_NAME),
+  ClientCfg = #{allow_auto_topic_creation => true,
+                request_timeout => 5000
+               },
+  {ok, ClientPid} = wolff:ensure_supervised_client(ClientId, ?HOSTS, ClientCfg),
+  [{clientid, ClientId}, {client, ClientPid} | Config];
+t_check_topic_exists_trigger_auto_creation({'end', Config}) ->
+  wolff:stop_and_delete_supervised_client(?config(clientid));
+t_check_topic_exists_trigger_auto_creation(Config) ->
+  Topic = iolist_to_binary(["tmp-", integer_to_list(erlang:system_time(microsecond))]),
+  Client = ?config(client),
+  ?assertEqual(ok, wolff_client:check_topic_exists_with_client_pid(Client, Topic)).
+
 t_recv_leader_connection_normal({init, Config}) ->
   ClientId = atom_to_binary(?FUNCTION_NAME),
   ClientCfg = client_config(),
