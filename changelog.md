@@ -1,3 +1,6 @@
+* 4.1.2
+  - Made sure `wolff_client:check_topic_exists_with_client_pid/2` triggers topic creation when `allow_auto_topic_creation` is set to `true`.
+
 * 4.1.1
   - Do not linger before enqueue when queue is not on disk.
     Since 4.0.0, the linger is moved from after the queue to before the queue to optimize IOPS in disk mode.

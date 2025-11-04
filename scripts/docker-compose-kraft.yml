@@ -30,6 +30,7 @@ services:
       ADVERTISED_HOSTNAME: ${KAFKA_1_IP}
       INNER_HOSTNAME: ${KAFKA_1_IP}
       VOTERS: 1@${KAFKA_1_IP}:9090
+      AUTO_CREATE_TOPICS_ENABLE: "true"
   kafka_2:
     image: ${KAFKA_IMAGE_TAG}
     container_name: 'kafka-2'
@@ -57,3 +58,4 @@ services:
       ADVERTISED_HOSTNAME: ${KAFKA_2_IP}
       INNER_HOSTNAME: ${KAFKA_2_IP}
       VOTERS: 1@${KAFKA_1_IP}:9090
+      AUTO_CREATE_TOPICS_ENABLE: "true"
