@@ -48,6 +48,16 @@ ensure_present(ClientId, ProducerId, Config) ->
 %% ensure client stopped and deleted under supervisor
 -spec ensure_absence(wolff_producers:id()) -> ok.
 ensure_absence(ProducerId) ->
+  %% This receive may take 5s because the child spec's shutdown policy is to kill after 5s
+  %% To ensure the cleanup is complete, spawn a process to do it, in case the caller
+  %% gets killed while waiting for shutdown.
+  {Pid, Mref} = erlang:spawn_monitor(fun() -> do_ensure_absence(ProducerId) end),
+  receive
+      {'DOWN', Mref, process, Pid, _} ->
+          ok
+  end.
+
+do_ensure_absence(ProducerId) ->
   case supervisor:terminate_child(?SUPERVISOR, ProducerId) of
     ok ->
       ok = wolff_producers:cleanup_workers_table(ProducerId),
@@ -60,7 +70,9 @@ child_spec(ClientId, ProducerId, Config) ->
   #{id => ProducerId,
     start => {wolff_producers, start_link, [ClientId, ProducerId, Config]},
     restart => transient,
-    type => worker
+    type => worker,
+    modules => [wolff_producers],
+    shutdown => 5000
    }.
 
 %% Find the running process (gen_server of wolff_producers) from thie child ID.

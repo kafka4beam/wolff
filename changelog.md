@@ -1,3 +1,7 @@
+* 4.1.3
+  - Ensure `wolff_client_sup:ensure_absence` and `wolff_producers_sup:ensure_absence` will perform shutdown and cleanup atomically.
+    Previously, if the caller process is killed while waiting for shutdown, a terminated child may leak under the supervisor.
+
 * 4.1.2
   - Made sure `wolff_client:check_topic_exists_with_client_pid/2` triggers topic creation when `allow_auto_topic_creation` is set to `true`.
 
