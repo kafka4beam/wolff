@@ -50,6 +50,16 @@ ensure_present(ClientId, Hosts, Config) ->
 %% @doc Ensure client stopped and deleted under supervisor.
 -spec ensure_absence(wolff:client_id()) -> ok.
 ensure_absence(ClientId) ->
+  %% This receive may take 5s because the child spec's shutdown policy is to kill after 5s
+  %% To ensure the cleanup is complete, spawn a process to do it, in case the caller
+  %% gets killed while waiting for shutdown.
+  {Pid, Mref} = erlang:spawn_monitor(fun() -> do_ensure_absence(ClientId) end),
+  receive
+      {'DOWN', Mref, process, Pid, _} ->
+          ok
+  end.
+
+do_ensure_absence(ClientId) ->
   case supervisor:terminate_child(?SUPERVISOR, ClientId) of
     ok -> ok = supervisor:delete_child(?SUPERVISOR, ClientId);
     {error, not_found} -> ok
@@ -79,7 +89,8 @@ child_spec(ClientId, Hosts, Config) ->
     start => {wolff_client, start_link, [ClientId, Hosts, Config]},
     restart => transient,
     type => worker,
-    modules => [wolff_client]
+    modules => [wolff_client],
+    shutdown => 5000
    }.
 
 %% @doc Create a ets table which is used for client registration.
