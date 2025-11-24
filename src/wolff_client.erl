@@ -57,7 +57,8 @@
         %% but we need to find connection by {topic(), partition()}
         leaders => #{{topic(), partition()} => connection()},
         %% Reference counting so we may drop connection metadata when no longer required.
-        known_topics := #{topic() => #{producer_group() => true}}
+        known_topics := #{topic() => #{producer_group() => true}},
+        owner := pid()
        }.
 
 -define(DEFAULT_METADATA_TIMEOUT, 10000).
@@ -78,6 +79,7 @@
 start_link(ClientId, Hosts, Config) ->
   {ConnCfg0, MyCfg} = split_config(Config),
   ConnCfg = ConnCfg0#{client_id => ClientId},
+  Owner = self(),
   St = #{client_id => ClientId,
          seed_hosts => Hosts,
          config => MyCfg,
@@ -86,7 +88,8 @@ start_link(ClientId, Hosts, Config) ->
          metadata_conn => not_initialized,
          metadata_ts => #{},
          leaders => #{},
-         known_topics => #{}
+         known_topics => #{},
+         owner => Owner
         },
   case maps:get(reg_name, Config, false) of
     false -> gen_server:start_link(?MODULE, St, []);
@@ -199,7 +202,13 @@ handle_call(Call, _From, St) ->
   {reply, {error, {unknown_call, Call}}, St}.
 
 handle_info({'EXIT', Pid, Reason}, St) ->
-  {noreply, flush_exit_signals(St, Pid, Reason)};
+  %% Check if this is a shutdown signal from the supervisor
+  case erlang:whereis(wolff_client_sup) of
+    Pid when Reason =:= shutdown ->
+      {stop, shutdown, St};
+    _ ->
+      {noreply, flush_exit_signals(St, Pid, Reason)}
+  end;
 handle_info(_Info, St) ->
   {noreply, upgrade(St)}.
 
@@ -243,7 +252,7 @@ handle_cast(_Cast, St) ->
 code_change(_OldVsn, St, _Extra) ->
   {ok, St}.
 
-terminate(_, #{client_id := ClientID, conns := Conns} = St) ->
+terminate(_Reason, #{client_id := ClientID, conns := Conns} = St) ->
   ok = wolff_client_sup:deregister_client(ClientID),
   MetadataConn = maps:get(metadata_conn, St, none),
   ok = close_connections(Conns),
@@ -307,9 +316,9 @@ close_connections(Conns, Topic) ->
          end,
   do_close_connections(maps:to_list(Conns), Pred, #{}).
 
-flush_exit_signals(St0) ->
+flush_exit_signals(#{owner := Owner} = St0) ->
   receive
-    {'EXIT', Pid, Reason} ->
+    {'EXIT', Pid, Reason} when Pid =/= Owner ->
       flush_exit_signals(St0, Pid, Reason)
   after
     0 ->
