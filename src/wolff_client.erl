@@ -201,9 +201,6 @@ handle_call(check_connectivity, _From, St0) ->
 handle_call(Call, _From, St) ->
   {reply, {error, {unknown_call, Call}}, St}.
 
-handle_info({'EXIT', Pid, Reason}, #{owner := Pid} = St) ->
-  %% If owner is not supervisor
-  {stop, Reason, St};
 handle_info({'EXIT', Pid, Reason}, St) ->
   %% Check if this is a shutdown signal from the supervisor
   case erlang:whereis(wolff_client_sup) of
