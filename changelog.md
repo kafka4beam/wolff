@@ -1,3 +1,7 @@
+* 4.1.4
+  - Optimize log message `replayq_overflow_dropped_produce_calls`.
+    Changed to `dropped_produce_requests` with a descriptive `cause` to hint detailed reason: `buffer_size_limit` or `high_system_RAM_usage`.
+
 * 4.1.3
   - Ensure `wolff_client_sup:ensure_absence` and `wolff_producers_sup:ensure_absence` will perform shutdown and cleanup atomically.
     Previously, if the caller process is killed while waiting for shutdown, a terminated child may leak under the supervisor.
