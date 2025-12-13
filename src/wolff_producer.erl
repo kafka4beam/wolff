@@ -101,6 +101,8 @@
 -define(EMPTY, empty).
 -define(SYNC_REF(Caller, Ref), {Caller, Ref}).
 -define(IS_SYNC_REF(Caller, Ref), ((is_reference(Caller) orelse is_pid(Caller)) andalso is_reference(Ref))).
+-define(DISCARD_OVERFLOW, "buffer_size_limit").
+-define(DISCARD_HIGH_MEM, "high_system_RAM_usage").
 
 -type ack_fun() :: wolff:ack_fun().
 -type send_req() :: ?SEND_REQ({pid(), reference()}, [wolff:msg()], ack_fun()).
@@ -1004,7 +1006,7 @@ eval_ack_cb(?ACK_CB({Caller, Ref}, Partition), BaseOffset) when ?IS_SYNC_REF(Cal
   ok.
 
 handle_overflow(St, _IsHighMemOverflow, Overflow) when Overflow =< 0 ->
-    ok = maybe_log_discard(St, 0),
+    ok = maybe_log_discard(St, 0, ?DISCARD_OVERFLOW),
     St;
 handle_overflow(#{replayq := Q,
                   pending_acks := PendingAcks,
@@ -1013,10 +1015,17 @@ handle_overflow(#{replayq := Q,
                 IsHighMemOverflow,
                 Overflow) ->
   BytesMode =
-        case IsHighMemOverflow of
-            true -> at_least;
-            false -> at_most
-        end,
+    case IsHighMemOverflow of
+      true -> at_least;
+      false -> at_most
+    end,
+  OverflowReason =
+    case IsHighMemOverflow of
+      true ->
+        ?DISCARD_HIGH_MEM;
+      false ->
+        ?DISCARD_OVERFLOW
+    end,
   {NewQ, QAckRef, Items} =
     replayq:pop(Q, #{bytes_limit => {BytesMode, Overflow}, count_limit => 999999999}),
   ok = replayq:ack(NewQ, QAckRef),
@@ -1027,7 +1036,7 @@ handle_overflow(#{replayq := Q,
   wolff_metrics:dropped_inc(Config, NrOfCalls),
   wolff_metrics:queuing_set(Config, replayq:count(NewQ)),
   wolff_metrics:queuing_bytes_set(Config, replayq:bytes(NewQ)),
-  ok = maybe_log_discard(St, NrOfCalls),
+  ok = maybe_log_discard(St, NrOfCalls, OverflowReason),
   {CbList, NewPendingAcks} = wolff_pendack:drop_backlog(PendingAcks, CallIDs),
   lists:foreach(fun(Cb) -> eval_ack_cb(Cb, ?buffer_overflow_discarded) end, CbList),
   St#{replayq := NewQ, pending_acks := NewPendingAcks}.
@@ -1049,27 +1058,28 @@ reply_error_for_all_reqs(St, Reason) ->
   inc_sent_failed(Config, Count - AlreadyInc, 1).
 
 %% use process dictionary for upgrade without restart
-maybe_log_discard(St, Increment) ->
+maybe_log_discard(St, Increment, Reason) ->
   Last = get_overflow_log_state(),
   #{last_cnt := LastCnt, acc_cnt := AccCnt} = Last,
   case LastCnt =:= AccCnt andalso Increment =:= 0 of
     true -> %% no change
       ok;
     false ->
-      maybe_log_discard(St, Increment, Last)
+      maybe_log_discard(St, Increment, Last, Reason)
   end.
 
 maybe_log_discard(#{topic := Topic, partition := Partition},
                   Increment,
-                  #{last_ts := LastTs, last_cnt := LastCnt, acc_cnt := AccCnt}) ->
+                  #{last_ts := LastTs, last_cnt := LastCnt, acc_cnt := AccCnt},
+                 Reason) ->
   NowTs = now_ts(),
   NewAccCnt = AccCnt + Increment,
   DiffCnt = NewAccCnt - LastCnt,
   case NowTs - LastTs > ?MIN_DISCARD_LOG_INTERVAL of
     true ->
       log_warn(Topic, Partition,
-               "replayq_overflow_dropped_produce_calls",
-               #{count => DiffCnt}),
+               "dropped_produce_requests",
+               #{count => DiffCnt, cause => Reason}),
       put_overflow_log_state(NowTs, NewAccCnt, NewAccCnt);
     false ->
       put_overflow_log_state(LastTs, LastCnt, NewAccCnt)
@@ -1166,12 +1176,12 @@ set_process_label(_ClientId, _Topic, _Partition) ->
 -include_lib("eunit/include/eunit.hrl").
 
 maybe_log_discard_test_() ->
-    [ {"no-increment", fun() -> maybe_log_discard(undefined, 0) end}
+    [ {"no-increment", fun() -> maybe_log_discard(undefined, 0, ?DISCARD_OVERFLOW) end}
     , {"fake-last-old",
        fun() ->
          Ts0 = now_ts() - ?MIN_DISCARD_LOG_INTERVAL - 1,
          ok = put_overflow_log_state(Ts0, 2, 2),
-         ok = maybe_log_discard(#{topic => <<"a">>, partition => 0}, 1),
+         ok = maybe_log_discard(#{topic => <<"a">>, partition => 0}, 1, ?DISCARD_OVERFLOW),
          St = get_overflow_log_state(),
          ?assertMatch(#{last_cnt := 3, acc_cnt := 3}, St),
          ?assert(maps:get(last_ts, St) - Ts0 > ?MIN_DISCARD_LOG_INTERVAL)
@@ -1180,7 +1190,7 @@ maybe_log_discard_test_() ->
        fun() ->
          Ts0 = now_ts(),
          ok = put_overflow_log_state(Ts0, 2, 2),
-         ok = maybe_log_discard(#{topic => <<"a">>, partition => 0}, 2),
+         ok = maybe_log_discard(#{topic => <<"a">>, partition => 0}, 2, ?DISCARD_OVERFLOW),
          St = get_overflow_log_state(),
          ?assertMatch(#{last_cnt := 2, acc_cnt := 4}, St),
          ?assert(maps:get(last_ts, St) - Ts0 < ?MIN_DISCARD_LOG_INTERVAL)
