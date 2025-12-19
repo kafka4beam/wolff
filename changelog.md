@@ -1,3 +1,6 @@
+* 4.1.5
+  - Fix logging garbled partition list for `stop_producers_for_lost_partitions` log.
+
 * 4.1.4
   - Optimize log message `replayq_overflow_dropped_produce_calls`.
     Changed to `dropped_produce_requests` with a descriptive `cause` to hint detailed reason: `buffer_size_limit` or `high_system_RAM_usage`.
