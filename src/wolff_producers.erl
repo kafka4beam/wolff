@@ -753,8 +753,14 @@ handle_partition_count_change(St, Topic, Connections0) ->
       %% This means the topic has been deleted then recreated,
       %% because Kafka doesn't support topic downscaling, hence error level log for more visibility
       LostPartitions = lists:seq(NowCount, OldCount - 1),
+      First = NowCount,
+      Last = OldCount - 1,
+      PartitionsStr = case First =:= Last of
+                         true -> integer_to_list(First);
+                         false -> integer_to_list(First) ++ ",...," ++ integer_to_list(Last)
+                       end,
       log_error("stop_producers_for_lost_partitions",
-                #{partitions => LostPartitions, producer_id => producer_id(St)}),
+                #{partitions => PartitionsStr, producer_id => producer_id(St)}),
       PartitionProducers = find_producers(St, ClientId, Group, Topic, LostPartitions, []),
       ProducerId = producer_id(St),
       lists:foreach(fun(P) -> delete_producer(ClientId, Group, Topic, P) end, LostPartitions),
