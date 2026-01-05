@@ -297,7 +297,7 @@ ensure_leader_connections2(#{conn_config := ConnConfig,
     {ok, {ConnPid, {Brokers, PartitionMetaList}}} ->
       ensure_leader_connections3(St, Topic, ConnPid, Brokers, PartitionMetaList);
     {error, Reason} ->
-      log_warn("Failed to get metadata\nreason: ~p", [Reason]),
+      log_warn("failed_to_get_metadata\nreason: ~p", [Reason]),
       {error, failed_to_fetch_metadata}
   end.
 
