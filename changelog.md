@@ -1,5 +1,8 @@
 * 4.1.6 (merge 1.5.20)
   - Fix producer reconnect timer on OTP 24.
+  - Add separate `metadata_request_timeout` config option, detached from `request_timeout`.
+    `request_timeout` is the maximum age tolerance for connection processes to detect potential zombified TCP connections, triggering forced reconnects. It is typically set to more than 10s.
+    `metadata_request_timeout` can be set to a smaller value to make metadata operations (such as topic existence checks and leader liveness probes) more responsive.
 
 * 4.1.5
   - Fix logging garbled partition list for `stop_producers_for_lost_partitions` log.

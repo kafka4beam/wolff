@@ -31,7 +31,7 @@ end_per_testcase(Case, Config) ->
 t_check_topic_exists_trigger_auto_creation({init, Config}) ->
   ClientId = atom_to_binary(?FUNCTION_NAME),
   ClientCfg = #{allow_auto_topic_creation => true,
-                request_timeout => 5000
+                metadata_request_timeout => 5000
                },
   {ok, ClientPid} = wolff:ensure_supervised_client(ClientId, ?HOSTS, ClientCfg),
   [{clientid, ClientId}, {client, ClientPid} | Config];
@@ -153,5 +153,5 @@ client_config() -> #{}.
 
 client_config_with_auto_create() ->
   #{allow_auto_topic_creation => true,
-    request_timeout => 2000
+    metadata_request_timeout => 2000
    }.
