@@ -1,3 +1,6 @@
+* 4.1.6 (merge 1.5.20)
+  - Fix producer reconnect timer on OTP 24.
+
 * 4.1.5
   - Fix logging garbled partition list for `stop_producers_for_lost_partitions` log.
 

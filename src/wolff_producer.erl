@@ -751,8 +751,11 @@ log_connection_down(Topic, Partition, Conn, Reason) ->
 
 is_timer_on(?no_timer) ->
   false;
+is_timer_on({T, Ref}) when is_integer(T), is_reference(Ref) ->
+  %% started by timer:apply_after (OTP 24)
+  erlang:monotonic_time(microsecond) < T;
 is_timer_on({_, Ref}) when is_reference(Ref) ->
-  %% started by timer:apply_after
+  %% started by timer:apply_after (OTP 25 or later)
   is_timer_on(Ref);
 is_timer_on(Ref) when is_reference(Ref) ->
   erlang:read_timer(Ref) =/= false.
