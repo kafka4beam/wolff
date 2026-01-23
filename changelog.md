@@ -1,3 +1,6 @@
+* 4.1.7
+  - Pin kafka_protocol-4.3.2 (crc32cer-1.1.2).
+
 * 4.1.6 (merge 1.5.20)
   - Fix producer reconnect timer on OTP 24.
   - Add separate `metadata_request_timeout` config option, detached from `request_timeout`.
