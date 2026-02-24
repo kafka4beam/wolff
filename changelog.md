@@ -1,3 +1,10 @@
+* 4.1.8
+  - Pin kafka_protocol-4.3.4 (crc32cer-1.1.3, kafka_protocol-4.3.4).
+   Fix connection losing queued requests when scheduled SASL re-authentication is triggered.
+   If a new re-authentication happens before the connection is still processing requests
+   left-over from the previous re-authentication, the pending requests may get lost.
+   As a result, a synced produce call may timeout.
+
 * 4.1.7
   - Pin kafka_protocol-4.3.2 (crc32cer-1.1.2).
 
