@@ -43,19 +43,20 @@
 -type host() :: wolff:host().
 -type conn_id() :: {topic(), partition()} | host().
 -type max_partitions() :: pos_integer() | ?all_partitions.
+-type disconnected() :: #{disconnected_at := pos_integer(), reason := term()}.
 
 -type state() ::
       #{client_id := wolff:client_id(),
         seed_hosts := [host()],
         config := config(),
         conn_config := kpro:conn_config(),
-        conns := #{conn_id() => connection()},
+        conns := #{conn_id() => connection() | disconnected()},
         metadata_conn := pid() | not_initialized | down,
         metadata_ts := #{topic() => erlang:timestamp()},
         %% only applicable when connection strategy is per_broker
         %% because in this case the connections are keyed by host()
         %% but we need to find connection by {topic(), partition()}
-        leaders => #{{topic(), partition()} => connection()},
+        leaders => #{{topic(), partition()} => connection() | disconnected()},
         %% Reference counting so we may drop connection metadata when no longer required.
         known_topics := #{topic() => #{producer_group() => true}},
         owner := pid()
@@ -328,13 +329,17 @@ flush_exit_signals(#{owner := Owner} = St0) ->
 %% Keep the connection process EXIT reason in the state.
 %% If the pid is not found in the conns map, it's a no-op.
 %% For example, the metadata connection is not in the conns map.
+%% A disconnected entry is stored as #{disconnected_at => Ts, reason => Reason}
+%% so that ensure_leader_connections can detect recent disconnects per topic.
 flush_exit_signals(#{conns := Conns0} = St0, Pid, Reason) ->
   Conns = maps:to_list(Conns0),
   St = case lists:keyfind(Pid, 2, Conns) of
     false ->
       St0;
     {ConnId, Pid} ->
-      St0#{conns => maps:put(ConnId, Reason, Conns0)}
+      Disconnected = #{disconnected_at => erlang:system_time(millisecond),
+                       reason => Reason},
+      St0#{conns => maps:put(ConnId, Disconnected, Conns0)}
   end,
   flush_exit_signals(St).
 
@@ -383,7 +388,7 @@ do_get_leader_connections(#{conns := Conns} = St, _Group, Topic) ->
             false when is_pid(MaybePid) ->
                   [{P, ?conn_down(noproc)} | Acc];
             false ->
-                  [{P, ?conn_down(MaybePid)} | Acc]
+                  [{P, ?conn_down(conn_down_reason(MaybePid))} | Acc]
           end;
          (_, _, Acc) -> Acc
       end,
@@ -401,8 +406,19 @@ is_metadata_fresh(#{metadata_ts := Topics, config := Config}, Topic) ->
   {ok, state()} | {error, any()}.
 ensure_leader_connections(St, Group, Topic, MaxPartitions) ->
   case is_metadata_fresh(St, Topic) of
-    true -> {ok, ensure_group_is_recorded(St, Group, Topic)};
-    false -> ensure_leader_connections2(St, Group, Topic, MaxPartitions)
+    true ->
+      case has_recently_disconnected_leader(St, Topic) of
+        true ->
+          %% A leader connection was recently lost. Even though metadata is fresh,
+          %% force a refresh to re-establish the dead connection promptly.
+          %% This covers the race where metadata was refreshed just before the
+          %% disconnect (e.g. Kafka's idle connection timeout killed the connection).
+          ensure_leader_connections2(St, Group, Topic, MaxPartitions);
+        false ->
+          {ok, ensure_group_is_recorded(St, Group, Topic)}
+      end;
+    false ->
+      ensure_leader_connections2(St, Group, Topic, MaxPartitions)
   end.
 
 -spec ensure_leader_connections2(state(), producer_group(), topic(), max_partitions()) ->
@@ -576,6 +592,40 @@ is_connected(MaybePid, {Host, Port}) ->
   end.
 
 is_alive(Pid) -> is_pid(Pid) andalso erlang:is_process_alive(Pid).
+
+%% Check if any leader connection for the given topic was recently lost.
+%% "Recently" means within (min_metadata_refresh_interval + 1000) milliseconds.
+%% The extra 1000ms margin covers the race where metadata_ts was refreshed
+%% just before the disconnect. After this window, the metadata will be stale
+%% anyway, so normal health check cycles will handle reconnection.
+has_recently_disconnected_leader(#{conns := Conns, config := Config} = St, Topic) ->
+  Now = erlang:system_time(millisecond),
+  MinInterval = maps:get(min_metadata_refresh_interval, Config, ?MIN_METADATA_REFRESH_INTERVAL),
+  Threshold = MinInterval + 1000,
+  case get_connection_strategy(St) of
+    per_partition ->
+      %% conns keyed by {Topic, Partition}
+      maps:fold(
+        fun ({T, _P}, #{disconnected_at := Ts}, false) when T =:= Topic ->
+              Now - Ts < Threshold;
+            (_, _, Acc) ->
+              Acc
+        end, false, Conns);
+    per_broker ->
+      %% conns keyed by Host; check if any connection is recently disconnected.
+      %% In per_broker mode, a single connection serves multiple topics,
+      %% so we check all connections regardless of topic.
+      maps:fold(
+        fun (_, #{disconnected_at := Ts}, false) ->
+              Now - Ts < Threshold;
+            (_, _, Acc) ->
+              Acc
+        end, false, Conns)
+  end.
+
+%% Extract the reason from a disconnected entry or return the value as-is.
+conn_down_reason(#{reason := Reason}) -> Reason;
+conn_down_reason(Other) -> Other.
 
 update_conn({ok, Pid}, ConnId, Conns) ->
   true = is_pid(Pid), %% assert

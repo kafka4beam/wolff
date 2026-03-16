@@ -149,6 +149,47 @@ t_recv_leader_connection_with_auto_create_retry_timeout(Config) ->
     meck:unload(kpro)
   end.
 
+%% Verify that get_leader_connections forces a metadata refresh and reconnection
+%% when a leader connection is lost recently, even if metadata timestamp is fresh.
+%% This covers the race condition where Kafka's idle connection timeout kills a
+%% connection right after a metadata refresh.
+t_reconnect_on_recent_disconnect({init, Config}) ->
+  ClientId = atom_to_binary(?FUNCTION_NAME),
+  ClientCfg = client_config(),
+  {ok, ClientPid} = wolff:ensure_supervised_client(ClientId, ?HOSTS, ClientCfg),
+  [{clientid, ClientId}, {client, ClientPid} | Config];
+t_reconnect_on_recent_disconnect({'end', Config}) ->
+  wolff:stop_and_delete_supervised_client(?config(clientid));
+t_reconnect_on_recent_disconnect(Config) ->
+  Client = ?config(client),
+  Topic = <<"test-topic">>,
+  Group = <<"test-group">>,
+  %% First call: establish connections and prime the metadata timestamp
+  {ok, Connections1} = wolff_client:get_leader_connections(Client, Group, Topic),
+  ?assert(length(Connections1) > 0),
+  lists:foreach(fun({_P, Pid}) -> ?assert(is_pid(Pid)) end, Connections1),
+  %% Second call immediately: metadata is fresh, should still return all alive
+  {ok, Connections2} = wolff_client:get_leader_connections(Client, Group, Topic),
+  lists:foreach(fun({_P, Pid}) -> ?assert(is_pid(Pid)) end, Connections2),
+  %% Now kill one of the leader connections to simulate Kafka idle timeout.
+  %% The EXIT signal will be processed by the wolff_client gen_server,
+  %% setting last_disconnect_ts.
+  [{_, VictimPid} | _] = Connections2,
+  exit(VictimPid, kill),
+  %% Give the EXIT signal time to be delivered and processed
+  timer:sleep(100),
+  %% Third call: metadata_ts is still fresh (only ~100ms since last refresh),
+  %% but last_disconnect_ts is also recent, so the fix should bypass the
+  %% freshness check and force reconnection.
+  {ok, Connections3} = wolff_client:get_leader_connections(Client, Group, Topic),
+  ?assert(length(Connections3) > 0),
+  lists:foreach(
+    fun({_P, Pid}) ->
+      ?assert(is_pid(Pid), #{partition_conn => Pid,
+                             msg => "expected all connections to be live pids after reconnect"})
+    end, Connections3),
+  ok.
+
 client_config() -> #{}.
 
 client_config_with_auto_create() ->
