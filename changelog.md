@@ -1,3 +1,13 @@
+* 4.1.9
+  - Force metadata refresh and leader reconnection when a partition leader connection is
+    recently lost (within `min_metadata_refresh_interval + 1000` ms).
+    Previously, if a leader connection was killed (e.g. by Kafka's idle connection timeout) right after
+    a metadata refresh, subsequent `get_leader_connections` calls would skip reconnection because
+    the metadata timestamp was still fresh. This could result in stale dead connections being
+    returned to health checks until the next metadata refresh cycle.
+    Disconnected connections now carry a timestamp so that `ensure_leader_connections` can detect
+    recent disconnects per topic and bypass the metadata freshness cache when needed.
+
 * 4.1.8
   - Pin kafka_protocol-4.3.4 (crc32cer-1.1.3, kafka_protocol-4.3.4).
    Fix connection losing queued requests when scheduled SASL re-authentication is triggered.
