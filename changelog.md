@@ -1,3 +1,12 @@
+* 4.1.10
+  - Reserve a minimum producer buffer under high memory pressure.
+    When `drop_if_highmem` is enabled and the system reports high memory usage,
+    the producer used to drop every newly-arrived call's bytes regardless of how
+    little was already buffered, which could leave the sender with nothing to
+    push to Kafka. The producer now keeps at least
+    `(max_send_ahead + 1) * max_batch_bytes` bytes buffered (enough to fill
+    every in-flight slot), and only drops the bytes that exceed this reserve.
+
 * 4.1.9
   - Force metadata refresh and leader reconnection when a partition leader connection is
     recently lost (within `min_metadata_refresh_interval + 1000` ms).

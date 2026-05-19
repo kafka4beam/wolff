@@ -151,6 +151,12 @@
 %% * `max_send_ahead': Number of batches to be sent ahead without receiving ack for
 %%    the last request. Must be 0 if messages must be delivered in strict order.
 %% * `compression': `no_compression', `snappy' or `gzip'.
+%% * `drop_if_highmem': default false. When set to true, and the queue is in
+%%    memory-only mode, the producer drops incoming calls instead of growing
+%%    the queue once `load_ctl:is_high_mem/0' reports high memory pressure.
+%%    To avoid starving the sender, the producer still keeps up to
+%%    `(max_send_ahead + 1) * max_batch_bytes' bytes buffered before any drop
+%%    kicks in.
 -spec start_link(wolff:client_id(), topic(), partition(), pid() | ?conn_down(any()), config_in()) ->
   {ok, pid()} | {error, any()}.
 start_link(ClientId, Topic, Partition, MaybeConnPid, Config) ->
@@ -984,7 +990,7 @@ enqueue_calls2(Calls,
         andalso load_ctl:is_high_mem(),
    Overflow = case IsHighMemOverflow of
                   true ->
-                      max(replayq:overflow(NewQ), CallByteSize);
+                      high_mem_overflow(NewQ, CallByteSize, Config0);
                   false ->
                       replayq:overflow(NewQ)
               end,
@@ -993,6 +999,18 @@ enqueue_calls2(Calls,
                        },
                    IsHighMemOverflow,
                    Overflow).
+
+%% Keep at least `(max_send_ahead + 1) * max_batch_bytes' worth of data
+%% buffered even under high memory pressure, so the sender has data to fill all
+%% of its in-flight slots and does not run dry when the queue is small. Drop
+%% at most the just-arrived call's bytes; with the default `max_send_ahead = 0'
+%% the reserve is one `max_batch_bytes' batch.
+high_mem_overflow(Q, CallByteSize,
+                  #{max_send_ahead := MaxSendAhead,
+                    max_batch_bytes := MaxBatchBytes}) ->
+    Reserved = (MaxSendAhead + 1) * MaxBatchBytes,
+    Excess = max(0, replayq:bytes(Q) - Reserved),
+    max(replayq:overflow(Q), min(CallByteSize, Excess)).
 
 maybe_reply_queued(?SEND_REQ(?no_queued_reply, _, _)) ->
     ok;
@@ -1197,6 +1215,58 @@ maybe_log_discard_test_() ->
          St = get_overflow_log_state(),
          ?assertMatch(#{last_cnt := 2, acc_cnt := 4}, St),
          ?assert(maps:get(last_ts, St) - Ts0 < ?MIN_DISCARD_LOG_INTERVAL)
+       end}
+    ].
+
+high_mem_overflow_test_() ->
+    %% A replayq holding plain integers, where each integer is its own size in bytes.
+    OpenQ = fun(MaxTotal) ->
+                    replayq:open(#{mem_only => true,
+                                   sizer => fun(N) -> N end,
+                                   max_total_bytes => MaxTotal})
+            end,
+    Append = fun(Q, Items) -> replayq:append(Q, Items) end,
+    Cfg = fun(MSA, MBB) -> #{max_send_ahead => MSA, max_batch_bytes => MBB} end,
+    [ {"empty queue, new call fits within reserve -> no drop",
+       fun() ->
+         %% Reserved = (2+1)*100 = 300. Queue holds 50 bytes after append.
+         Q = Append(OpenQ(10000), [50]),
+         ?assert(high_mem_overflow(Q, 50, Cfg(2, 100)) =< 0)
+       end}
+    , {"queue exactly at reserve -> no drop",
+       fun() ->
+         %% Reserved = 300, queue at 300, new call's bytes = 100.
+         Q = Append(OpenQ(10000), [100, 100, 100]),
+         ?assert(high_mem_overflow(Q, 100, Cfg(2, 100)) =< 0)
+       end}
+    , {"queue above reserve -> drop only the new call's bytes",
+       fun() ->
+         %% Reserved = 300, queue at 400 after appending 100. Excess = 100.
+         Q = Append(OpenQ(10000), [100, 100, 100, 100]),
+         ?assertEqual(100, high_mem_overflow(Q, 100, Cfg(2, 100)))
+       end}
+    , {"queue well above reserve -> still capped at the new call's bytes",
+       fun() ->
+         %% Reserved = 300, queue at 800. Excess = 500 but cap is CallByteSize = 100.
+         Q = Append(OpenQ(10000), [100, 100, 100, 100, 100, 100, 100, 100]),
+         ?assertEqual(100, high_mem_overflow(Q, 100, Cfg(2, 100)))
+       end}
+    , {"max_send_ahead = 0 keeps one batch worth of reserve",
+       fun() ->
+         %% Reserved = (0+1)*100 = 100, queue at 100 -> no drop yet.
+         Q1 = Append(OpenQ(10000), [100]),
+         ?assert(high_mem_overflow(Q1, 100, Cfg(0, 100)) =< 0),
+         %% Queue at 200, new call 100 -> drop 100.
+         Q2 = Append(OpenQ(10000), [100, 100]),
+         ?assertEqual(100, high_mem_overflow(Q2, 100, Cfg(0, 100)))
+       end}
+    , {"replayq max_total_bytes overflow always wins",
+       fun() ->
+         %% max_total_bytes = 50, queue at 100 -> replayq:overflow = 50.
+         %% Reserved = 300 (huge), Excess = max(0, 100-300) = 0.
+         %% Result must still be 50 because the queue itself is over its hard limit.
+         Q = Append(OpenQ(50), [100]),
+         ?assertEqual(50, high_mem_overflow(Q, 100, Cfg(2, 100)))
        end}
     ].
 -endif.
