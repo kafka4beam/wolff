@@ -307,6 +307,113 @@ test_connection_restart() ->
   ets:delete(CntrEventsTable),
   deinstall_event_logging(?FUNCTION_NAME).
 
+%% A batch which is in-flight when the connection drops, and whose messages
+%% have all aged past `max_batch_age', should be dropped (not retried) when the
+%% connection recovers.
+drop_expired_batch_on_reconnect_test_() ->
+  {timeout, 30, fun drop_expired_batch_on_reconnect/0}.
+
+drop_expired_batch_on_reconnect() ->
+  CntrEventsTable = ets:new(cntr_events, [public]),
+  install_event_logging(?FUNCTION_NAME, CntrEventsTable, false),
+  ClientCfg0 = client_config(),
+  ClientCfg = ClientCfg0#{min_metadata_refresh_interval => 0},
+  {ok, Client} = start_client(<<"client-1">>, ?HOSTS, ClientCfg),
+  MaxAge = 200,
+  %% mem-only replayq (no replayq_dir): messages left undelivered by the mocked
+  %% kpro are discarded when the producer stops, so nothing leaks to other tests.
+  ProducerCfg = #{max_batch_age => MaxAge,
+                  max_send_ahead => 0,
+                  reconnect_delay_ms => 0},
+  {ok, Producers} = wolff:start_producers(Client, <<"test-topic">>, ProducerCfg),
+  Producer = wolff:get_producer(Producers, 0),
+  TesterPid = self(),
+  %% Swallow produce requests so the batch stays in-flight (never acked),
+  %% leaving it in sent_reqs when the connection is killed.
+  ok = meck:new(kpro, [no_history, no_link, passthrough]),
+  meck:expect(kpro, send, fun(_Conn, _Req) -> TesterPid ! sent_to_kafka, ok end),
+  Ref = make_ref(),
+  AckFun = fun(_Partition, Result) -> TesterPid ! {ack, Ref, Result}, ok end,
+  Msg = #{key => ?KEY, value => <<"value">>},
+  _ = wolff:send(Producers, [Msg], AckFun),
+  try
+    %% wait until the batch is in-flight
+    receive sent_to_kafka -> ok after 5000 -> error(timeout_waiting_send) end,
+    %% let the batch age past max_batch_age
+    timer:sleep(MaxAge + 100),
+    %% kill the connection to trigger a reconnect (hence resend_sent_reqs)
+    #{conn := Conn} = sys:get_state(Producer),
+    exit(Conn, kill),
+    %% the batch is expired -> dropped with reason `message_expired', not resent
+    receive
+      {ack, Ref, Result} -> ?assertEqual(message_expired, Result)
+    after 5000 -> error(timeout_waiting_ack)
+    end
+  after
+    meck:unload(kpro),
+    ok = wolff:stop_producers(Producers),
+    ok = stop_client(Client)
+  end,
+  %% dropped / dropped_expired bumped, and the batch is not counted as retried
+  ?assertEqual([1], get_telemetry_seq(CntrEventsTable, [wolff, dropped_expired])),
+  ?assertEqual([1], get_telemetry_seq(CntrEventsTable, [wolff, dropped])),
+  ?assertEqual([], get_telemetry_seq(CntrEventsTable, [wolff, retried])),
+  ets:delete(CntrEventsTable),
+  deinstall_event_logging(?FUNCTION_NAME).
+
+%% A batch that is still queued (never dispatched) and whose messages have all
+%% aged past `max_batch_age' is dropped from the front before the next send.
+drop_expired_queued_batch_test_() ->
+  {timeout, 30, fun drop_expired_queued_batch/0}.
+
+drop_expired_queued_batch() ->
+  CntrEventsTable = ets:new(cntr_events, [public]),
+  install_event_logging(?FUNCTION_NAME, CntrEventsTable, false),
+  ClientCfg = client_config(),
+  {ok, Client} = start_client(<<"client-1">>, ?HOSTS, ClientCfg),
+  MaxAge = 200,
+  %% mem-only replayq (no replayq_dir): the batches left undelivered here
+  %% (in-flight + queued) are discarded when the producer stops, so nothing
+  %% leaks to other tests. max_send_ahead => 0 keeps only one batch in flight,
+  %% so the 2nd stays queued.
+  ProducerCfg = #{max_batch_age => MaxAge,
+                  max_send_ahead => 0,
+                  max_batch_bytes => 1},
+  {ok, Producers} = wolff:start_producers(Client, <<"test-topic">>, ProducerCfg),
+  TesterPid = self(),
+  %% Swallow produce requests so the 1st batch stays in-flight (never acked),
+  %% forcing the 2nd batch to sit in the queue.
+  ok = meck:new(kpro, [no_history, no_link, passthrough]),
+  meck:expect(kpro, send, fun(_Conn, _Req) -> TesterPid ! sent_to_kafka, ok end),
+  Ref = make_ref(),
+  Ack = fun(N) -> fun(_Partition, Result) -> TesterPid ! {ack, Ref, N, Result}, ok end end,
+  Msg = fun(V) -> #{key => ?KEY, value => V} end,
+  try
+    %% 1st batch goes in-flight (sent, swallowed)
+    _ = wolff:send(Producers, [Msg(<<"first">>)], Ack(1)),
+    receive sent_to_kafka -> ok after 5000 -> error(timeout_waiting_send) end,
+    %% 2nd batch cannot be sent (max_send_ahead = 0), it stays queued
+    _ = wolff:send(Producers, [Msg(<<"second">>)], Ack(2)),
+    %% let the queued 2nd batch age past max_batch_age
+    timer:sleep(MaxAge + 100),
+    %% enqueue a 3rd (fresh) batch; this triggers a send attempt, during which
+    %% the expired 2nd batch is dropped from the front, while the 3rd survives
+    _ = wolff:send(Producers, [Msg(<<"third">>)], Ack(3)),
+    receive
+      {ack, Ref, 2, Result} -> ?assertEqual(message_expired, Result);
+      {ack, Ref, Other, _} -> error({unexpected_ack, Other})
+    after 5000 -> error(timeout_waiting_ack)
+    end
+  after
+    meck:unload(kpro),
+    ok = wolff:stop_producers(Producers),
+    ok = stop_client(Client)
+  end,
+  ?assertEqual([1], get_telemetry_seq(CntrEventsTable, [wolff, dropped_expired])),
+  ?assertEqual([1], get_telemetry_seq(CntrEventsTable, [wolff, dropped])),
+  ets:delete(CntrEventsTable),
+  deinstall_event_logging(?FUNCTION_NAME).
+
 zero_ack_test() ->
   CntrEventsTable = ets:new(cntr_events, [public]),
   install_event_logging(?FUNCTION_NAME, CntrEventsTable, false),
@@ -1177,6 +1284,7 @@ telemetry_events() ->
     [
       [wolff, dropped],
       [wolff, dropped_queue_full],
+      [wolff, dropped_expired],
       [wolff, matched],
       [wolff, queuing],
       [wolff, queuing_bytes],

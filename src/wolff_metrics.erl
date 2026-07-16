@@ -9,6 +9,8 @@
     dropped_inc/2,
     dropped_queue_full_inc/1,
     dropped_queue_full_inc/2,
+    dropped_expired_inc/1,
+    dropped_expired_inc/2,
     failed_inc/1,
     failed_inc/2,
     retried_inc/1,
@@ -61,6 +63,16 @@ dropped_queue_full_inc(Config) ->
 
 dropped_queue_full_inc(Config, Val) ->
     telemetry:execute([wolff, dropped_queue_full],
+                      #{counter_inc => Val},
+                      telemetry_meta_data(Config)).
+
+%% @doc Count of messages dropped because they stayed in the buffer longer
+%% than `max_batch_age' before they could be (re)sent to Kafka.
+dropped_expired_inc(Config) ->
+    dropped_expired_inc(Config, 1).
+
+dropped_expired_inc(Config, Val) ->
+    telemetry:execute([wolff, dropped_expired],
                       #{counter_inc => Val},
                       telemetry_meta_data(Config)).
 
