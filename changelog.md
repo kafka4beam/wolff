@@ -1,3 +1,16 @@
+* 4.2.0
+  - Add `max_batch_age` producer option (default `infinity`, i.e. disabled).
+    When set to a number of milliseconds, a batch is dropped instead of being
+    sent to Kafka if ALL of its messages are older than `max_batch_age` (measured
+    from when they were appended to the buffer). This covers both batches still
+    queued (dropped from the front before the next send, even while disconnected)
+    and batches that were in-flight when a connection dropped (dropped instead of
+    retried on reconnect). Each dropped message has its ack callback evaluated
+    with reason `message_expired` and bumps the `dropped` and the new
+    `dropped_expired` counters. This lets callers bound the delivery latency of
+    buffered messages across long broker outages instead of sending arbitrarily
+    stale data.
+
 * 4.1.10
   - Reserve a minimum producer buffer under high memory pressure.
     When `drop_if_highmem` is enabled and the system reports high memory usage,

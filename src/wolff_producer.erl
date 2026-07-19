@@ -49,6 +49,7 @@
                       max_send_ahead |
                       compression |
                       drop_if_highmem |
+                      max_batch_age |
                       telemetry_meta_data |
                       max_partitions.
 
@@ -65,6 +66,7 @@
                        max_send_ahead => non_neg_integer(),
                        compression => kpro:compress_option(),
                        drop_if_highmem => boolean(),
+                       max_batch_age => timeout(),
                        telemetry_meta_data => map(),
                        max_partitions => pos_integer()
                       }.
@@ -81,6 +83,7 @@
                           max_send_ahead => non_neg_integer(),
                           compression => kpro:compress_option(),
                           drop_if_highmem => boolean(),
+                          max_batch_age => timeout(),
                           telemetry_meta_data => map(),
                           max_partitions => pos_integer()
                          }.
@@ -103,6 +106,7 @@
 -define(IS_SYNC_REF(Caller, Ref), ((is_reference(Caller) orelse is_pid(Caller)) andalso is_reference(Ref))).
 -define(DISCARD_OVERFLOW, "buffer_size_limit").
 -define(DISCARD_HIGH_MEM, "high_system_RAM_usage").
+-define(DISCARD_EXPIRED, "message_expired").
 
 -type ack_fun() :: wolff:ack_fun().
 -type send_req() :: ?SEND_REQ({pid(), reference()}, [wolff:msg()], ack_fun()).
@@ -157,6 +161,15 @@
 %%    To avoid starving the sender, the producer still keeps up to
 %%    `(max_send_ahead + 1) * max_batch_bytes' bytes buffered before any drop
 %%    kicks in.
+%% * `max_batch_age': default `infinity'. Maximum age (in milliseconds) a batch
+%%    may reach before it is dropped instead of being sent to Kafka. A batch is
+%%    dropped only when ALL of its messages are older than this age (measured
+%%    from when they were appended to the buffer). This applies both to batches
+%%    still queued (dropped from the front before the next send) and to batches
+%%    that were in-flight when a connection dropped (dropped instead of retried
+%%    on reconnect). Each dropped message has its ack callback evaluated with
+%%    reason `message_expired' and bumps the `dropped' and `dropped_expired'
+%%    counters. Set to `infinity' to disable (never drop by age).
 -spec start_link(wolff:client_id(), topic(), partition(), pid() | ?conn_down(any()), config_in()) ->
   {ok, pid()} | {error, any()}.
 start_link(ClientId, Topic, Partition, MaybeConnPid, Config) ->
@@ -423,6 +436,7 @@ use_defaults(Config) ->
                         {max_linger_bytes, 0},
                         {max_send_ahead, 0},
                         {compression, no_compression},
+                        {max_batch_age, infinity},
                         {reconnect_delay_ms, 2000}
                        ]).
 
@@ -479,16 +493,121 @@ send_request(QueueItems,
 
 resend_sent_reqs(#{sent_reqs := SentReqs,
                    config := Config
-                  } = St, Reason) ->
-  F = fun(Sent, Acc) ->
-          wolff_metrics:retried_inc(Config, 1),
-          NewSentList = resend_requests(Sent, St, Reason),
-          lists:reverse(NewSentList, Acc)
+                  } = St0, Reason) ->
+  MaxBatchAge = maps:get(max_batch_age, Config, infinity),
+  Now = now_ts(),
+  F = fun(Sent, {Acc, StIn}) ->
+          case is_batch_expired(Sent, MaxBatchAge, Now) of
+            true ->
+              %% All messages in this batch are older than max_batch_age;
+              %% drop it instead of retrying.
+              StOut = drop_expired_sent_req(Sent, StIn),
+              {Acc, StOut};
+            false ->
+              wolff_metrics:retried_inc(Config, 1),
+              NewSentList = resend_requests(Sent, StIn, Reason),
+              {lists:reverse(NewSentList, Acc), StIn}
+          end
       end,
-  NewSentReqs = lists:foldl(F, [], queue:to_list(SentReqs)),
-  St#{sent_reqs := queue:from_list(lists:reverse(NewSentReqs))}.
+  {NewSentReqs, St1} = lists:foldl(F, {[], St0}, queue:to_list(SentReqs)),
+  St1#{sent_reqs := queue:from_list(lists:reverse(NewSentReqs))}.
 
-maybe_send_to_kafka(#{conn := Conn, replayq := Q} = St) ->
+%% A batch is expired only when ALL of its messages are older than
+%% `max_batch_age'. Queue items are appended in timestamp order, so the last
+%% item carries the newest timestamp; if even that is older than the age
+%% threshold, the whole batch is expired.
+is_batch_expired(_Sent, infinity, _Now) ->
+  false;
+is_batch_expired(#{q_items := Items}, MaxBatchAge, Now) ->
+  ?Q_ITEM(_CallId, Ts, _Batch) = lists:last(Items),
+  Now - Ts >= MaxBatchAge.
+
+%% Drop an expired sent request: evaluate its ack callbacks with the
+%% `message_expired' reason, release the replayq segment, adjust bookkeeping
+%% and bump the `dropped' / `dropped_expired' counters. Modeled on
+%% `clear_sent_and_ack_callers/3' and `handle_overflow/3'.
+drop_expired_sent_req(#{q_items := Items,
+                        q_ack_ref := Q_AckRef,
+                        req_ref := ReqRef},
+                      #{sent_reqs_count := SentReqsCount,
+                        inflight_calls := InflightCalls,
+                        pending_acks := PendingAcks,
+                        replayq := Q,
+                        config := Config
+                       } = St) ->
+  %% The reply alias is useless now; the ack for this request will never arrive.
+  _ = unalias_req_ref(ReqRef),
+  Calls = get_calls_from_queue_items(Items),
+  NrOfCalls = count_calls(Items),
+  NewPendingAcks =
+    lists:foldl(
+      fun({CallId, _BatchSize}, Acc) ->
+          case wolff_pendack:take_inflight(Acc, CallId) of
+            {ok, AckCb, Acc1} ->
+              ok = eval_ack_cb(AckCb, ?message_expired),
+              Acc1;
+            false ->
+              Acc
+          end
+      end, PendingAcks, Calls),
+  ok = replayq_ack(Q, Q_AckRef),
+  NewInflightCalls = InflightCalls - NrOfCalls,
+  wolff_metrics:dropped_inc(Config, NrOfCalls),
+  wolff_metrics:dropped_expired_inc(Config, NrOfCalls),
+  wolff_metrics:inflight_set(Config, NewInflightCalls),
+  ok = maybe_log_discard(St, NrOfCalls, ?DISCARD_EXPIRED),
+  St#{sent_reqs_count := SentReqsCount - 1,
+      inflight_calls := NewInflightCalls,
+      pending_acks := NewPendingAcks}.
+
+unalias_req_ref({alias, Ref}) ->
+  _ = erlang:unalias(Ref),
+  ok;
+unalias_req_ref(_) ->
+  ok.
+
+%% Drop expired batches from the front (oldest end) of the queue before trying
+%% to send. Queue items are appended in timestamp order, so once the front is
+%% not expired, nothing behind it is either. This runs regardless of connection
+%% or inflight-window state, so stale data is shed even while disconnected.
+drop_expired_head(#{config := Config} = St) ->
+  case maps:get(max_batch_age, Config, infinity) of
+    infinity -> St;
+    MaxBatchAge -> drop_expired_head(St, MaxBatchAge, now_ts())
+  end.
+
+drop_expired_head(#{replayq := Q} = St, MaxBatchAge, Now) ->
+  case replayq:peek(Q) of
+    ?Q_ITEM(_CallId, Ts, _Batch) when Now - Ts >= MaxBatchAge ->
+      drop_expired_head(discard_expired_front(St), MaxBatchAge, Now);
+    _ ->
+      %% empty queue, or the front item is not expired yet
+      St
+  end.
+
+%% Pop and drop the single front (oldest) queue item, which never made it to
+%% Kafka; its callers are still in the pending-ack backlog. Mirrors
+%% `handle_overflow/3'.
+discard_expired_front(#{replayq := Q,
+                        pending_acks := PendingAcks,
+                        config := Config
+                       } = St) ->
+  {NewQ, AckRef, Items} = replayq:pop(Q, #{count_limit => 1}),
+  ok = replayq:ack(NewQ, AckRef),
+  Calls = get_calls_from_queue_items(Items),
+  CallIDs = lists:map(fun({CallId, _BatchSize}) -> CallId end, Calls),
+  NrOfCalls = count_calls(Items),
+  wolff_metrics:dropped_inc(Config, NrOfCalls),
+  wolff_metrics:dropped_expired_inc(Config, NrOfCalls),
+  wolff_metrics:queuing_set(Config, replayq:count(NewQ)),
+  wolff_metrics:queuing_bytes_set(Config, replayq:bytes(NewQ)),
+  {CbList, NewPendingAcks} = wolff_pendack:drop_backlog(PendingAcks, CallIDs),
+  lists:foreach(fun(Cb) -> eval_ack_cb(Cb, ?message_expired) end, CbList),
+  ok = maybe_log_discard(St, NrOfCalls, ?DISCARD_EXPIRED),
+  St#{replayq := NewQ, pending_acks := NewPendingAcks}.
+
+maybe_send_to_kafka(St0) ->
+  #{conn := Conn, replayq := Q} = St = drop_expired_head(St0),
   case replayq:count(Q) =:= 0 of
     true ->
       %% nothing to send
@@ -1195,6 +1314,20 @@ set_process_label(_ClientId, _Topic, _Partition) ->
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
+
+is_batch_expired_test_() ->
+    Now = now_ts(),
+    Item = fun(AgeMs) -> ?Q_ITEM(0, Now - AgeMs, [#{key => <<>>, value => <<>>}]) end,
+    Sent = fun(Items) -> #{q_items => Items} end,
+    [ {"infinity never expires",
+       ?_assertNot(is_batch_expired(Sent([Item(10000)]), infinity, Now))}
+    , {"all items older than max_batch_age -> expired",
+       ?_assert(is_batch_expired(Sent([Item(100), Item(200)]), 50, Now))}
+    , {"one item younger than max_batch_age -> not expired",
+       ?_assertNot(is_batch_expired(Sent([Item(100), Item(10)]), 50, Now))}
+    , {"exactly at max_batch_age -> expired",
+       ?_assert(is_batch_expired(Sent([Item(50)]), 50, Now))}
+    ].
 
 maybe_log_discard_test_() ->
     [ {"no-increment", fun() -> maybe_log_discard(undefined, 0, ?DISCARD_OVERFLOW) end}
