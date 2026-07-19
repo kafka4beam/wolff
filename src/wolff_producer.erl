@@ -50,6 +50,7 @@
                       compression |
                       drop_if_highmem |
                       max_batch_age |
+                      max_retry |
                       telemetry_meta_data |
                       max_partitions.
 
@@ -67,6 +68,7 @@
                        compression => kpro:compress_option(),
                        drop_if_highmem => boolean(),
                        max_batch_age => timeout(),
+                       max_retry => infinity | non_neg_integer(),
                        telemetry_meta_data => map(),
                        max_partitions => pos_integer()
                       }.
@@ -84,6 +86,7 @@
                           compression => kpro:compress_option(),
                           drop_if_highmem => boolean(),
                           max_batch_age => timeout(),
+                          max_retry => infinity | non_neg_integer(),
                           telemetry_meta_data => map(),
                           max_partitions => pos_integer()
                          }.
@@ -170,6 +173,15 @@
 %%    on reconnect). Each dropped message has its ack callback evaluated with
 %%    reason `message_expired' and bumps the `dropped' and `dropped_expired'
 %%    counters. Set to `infinity' to disable (never drop by age).
+%% * `max_retry': default `infinity'. Maximum number of times a batch is retried
+%%    after a Kafka error response (e.g. `not_leader_for_partition') before it is
+%%    dropped. A batch is dropped once its attempt counter reaches
+%%    `max_retry + 1' (i.e. the initial send plus `max_retry' retries have all
+%%    failed). Each dropped message has its ack callback evaluated with reason
+%%    `max_retry_exceeded' and bumps the `dropped' counter. `max_retry = 0' drops
+%%    on the first error; `infinity' (the default) retries forever. Note this
+%%    counts Kafka error responses only; resends triggered purely by connection
+%%    loss are bounded by `max_batch_age', not by `max_retry'.
 -spec start_link(wolff:client_id(), topic(), partition(), pid() | ?conn_down(any()), config_in()) ->
   {ok, pid()} | {error, any()}.
 start_link(ClientId, Topic, Partition, MaybeConnPid, Config) ->
@@ -437,6 +449,7 @@ use_defaults(Config) ->
                         {max_send_ahead, 0},
                         {compression, no_compression},
                         {max_batch_age, infinity},
+                        {max_retry, infinity},
                         {reconnect_delay_ms, 2000}
                        ]).
 
@@ -787,20 +800,45 @@ do_handle_kafka_ack(EC, _BaseOffset, St) when EC =:= ?message_too_large orelse E
   end;
 do_handle_kafka_ack(ErrorCode, _BaseOffset, St) ->
   %% Other errors, such as not_leader_for_partition
-  #{sent_reqs := SentReqs} = St,
-  {value, #{attempts := Attempts, q_items := Items}} = queue:peek(SentReqs),
-  #{topic := Topic,
+  #{sent_reqs := SentReqs,
+    topic := Topic,
     partition := Partition,
     config := Config
    } = St,
+  {value, #{attempts := Attempts, q_items := Items}} = queue:peek(SentReqs),
   NrOfCalls = count_calls(Items),
-  inc_sent_failed(Config, NrOfCalls, Attempts),
-  log_warn(Topic, Partition, "error_in_produce_response",
-           #{error_code => ErrorCode,
-             batch_size => count_msgs(Items),
-             attempts => Attempts}),
-  St1 = increment_attempt(St),
-  erlang:throw({kafka_error, ErrorCode, St1}).
+  MaxRetry = maps:get(max_retry, Config, infinity),
+  case is_max_retry_reached(Attempts, MaxRetry) of
+    true ->
+      %% Give up: drop the front batch instead of retrying it again.
+      log_error(Topic, Partition, "dropped_produce_request_reached_max_retry",
+                #{error_code => ErrorCode,
+                  batch_size => count_msgs(Items),
+                  attempts => Attempts,
+                  max_retry => MaxRetry}),
+      wolff_metrics:dropped_inc(Config, NrOfCalls),
+      %% clear_sent_and_ack_callers/3 pops the front request, bumps the
+      %% failed/retried_failed counter, and acks the callers with the reason.
+      St1 = clear_sent_and_ack_callers(ErrorCode, ?max_retry_exceeded, St),
+      %% Still reconnect: the error (e.g. not_leader_for_partition) means the
+      %% current connection is stale for the remaining in-flight requests.
+      erlang:throw({kafka_error, ErrorCode, St1});
+    false ->
+      inc_sent_failed(Config, NrOfCalls, Attempts),
+      log_warn(Topic, Partition, "error_in_produce_response",
+               #{error_code => ErrorCode,
+                 batch_size => count_msgs(Items),
+                 attempts => Attempts}),
+      St1 = increment_attempt(St),
+      erlang:throw({kafka_error, ErrorCode, St1})
+  end.
+
+%% A batch is dropped once it has been attempted `max_retry + 1' times, i.e. the
+%% initial send plus `max_retry' retries have all failed.
+is_max_retry_reached(_Attempts, infinity) ->
+  false;
+is_max_retry_reached(Attempts, MaxRetry) ->
+  Attempts >= MaxRetry + 1.
 
 %% Since we only handle Kafka ack for the first sent request in the sent queue
 %% we only bump the first itme with attempt counter
@@ -1327,6 +1365,15 @@ is_batch_expired_test_() ->
        ?_assertNot(is_batch_expired(Sent([Item(100), Item(10)]), 50, Now))}
     , {"exactly at max_batch_age -> expired",
        ?_assert(is_batch_expired(Sent([Item(50)]), 50, Now))}
+    ].
+
+is_max_retry_reached_test_() ->
+    [ {"infinity never reached", ?_assertNot(is_max_retry_reached(1000000, infinity))}
+      %% max_retry = 0 -> drop on the first attempt's failure
+    , {"0: first attempt reached", ?_assert(is_max_retry_reached(1, 0))}
+      %% max_retry = 3 -> allow attempts 1..4, drop when attempts reaches 4
+    , {"3: attempt 3 not reached", ?_assertNot(is_max_retry_reached(3, 3))}
+    , {"3: attempt 4 reached", ?_assert(is_max_retry_reached(4, 3))}
     ].
 
 maybe_log_discard_test_() ->

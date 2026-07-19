@@ -7,6 +7,7 @@
 -define(buffer_overflow_discarded, buffer_overflow_discarded).
 -define(partition_lost, partition_lost).
 -define(message_expired, message_expired).
+-define(max_retry_exceeded, max_retry_exceeded).
 
 %% Kafka has default batch size limit 1000012.
 %% Since Kafka 2.4, it has been extended to 1048588.
