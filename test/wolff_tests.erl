@@ -414,6 +414,52 @@ drop_expired_queued_batch() ->
   ets:delete(CntrEventsTable),
   deinstall_event_logging(?FUNCTION_NAME).
 
+%% With max_retry = 0 a batch is dropped on the first Kafka error response,
+%% instead of being retried, and the caller is acked with `max_retry_exceeded'.
+drop_batch_on_max_retry_test_() ->
+  {timeout, 30, fun drop_batch_on_max_retry/0}.
+
+drop_batch_on_max_retry() ->
+  CntrEventsTable = ets:new(cntr_events, [public]),
+  install_event_logging(?FUNCTION_NAME, CntrEventsTable, false),
+  ClientCfg = client_config(),
+  {ok, Client} = start_client(<<"client-1">>, ?HOSTS, ClientCfg),
+  %% mem-only replayq; max_retry => 0 drops on the first error
+  ProducerCfg = #{max_retry => 0, max_send_ahead => 0, reconnect_delay_ms => 0},
+  {ok, Producers} = wolff:start_producers(Client, <<"test-topic">>, ProducerCfg),
+  Producer = wolff:get_producer(Producers, 0),
+  TesterPid = self(),
+  %% Swallow the produce request so we can inject a fake error response below.
+  ok = meck:new(kpro, [no_history, no_link, passthrough]),
+  meck:expect(kpro, send, fun(_Conn, _Req) -> TesterPid ! sent_to_kafka, ok end),
+  Ref = make_ref(),
+  AckFun = fun(_Partition, Result) -> TesterPid ! {ack, Ref, Result}, ok end,
+  Msg = #{key => ?KEY, value => <<"value">>},
+  try
+    _ = wolff:send(Producers, [Msg], AckFun),
+    receive sent_to_kafka -> ok after 5000 -> error(timeout_waiting_send) end,
+    %% grab the connection and the in-flight request ref from the producer state
+    #{conn := Conn, sent_reqs := SentReqs} = sys:get_state(Producer),
+    {value, #{req_ref := ReqRef}} = queue:peek(SentReqs),
+    %% inject a Kafka error response for that request
+    ErrBody = #{responses =>
+                  [#{partition_responses =>
+                       [#{error_code => not_leader_for_partition,
+                          base_offset => -1}]}]},
+    Producer ! {msg, Conn, #kpro_rsp{api = produce, ref = ReqRef, msg = ErrBody}},
+    receive
+      {ack, Ref, Result} -> ?assertEqual(max_retry_exceeded, Result)
+    after 5000 -> error(timeout_waiting_ack)
+    end
+  after
+    meck:unload(kpro),
+    ok = wolff:stop_producers(Producers),
+    ok = stop_client(Client)
+  end,
+  ?assertEqual([1], get_telemetry_seq(CntrEventsTable, [wolff, dropped])),
+  ets:delete(CntrEventsTable),
+  deinstall_event_logging(?FUNCTION_NAME).
+
 zero_ack_test() ->
   CntrEventsTable = ets:new(cntr_events, [public]),
   install_event_logging(?FUNCTION_NAME, CntrEventsTable, false),

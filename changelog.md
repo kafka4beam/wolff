@@ -1,4 +1,12 @@
 * 4.2.0
+  - Add `max_retry` producer option (default `infinity`, i.e. retry forever).
+    When set to a non-negative integer, a batch that keeps getting Kafka error
+    responses (e.g. `not_leader_for_partition`) is dropped once it has been
+    attempted `max_retry + 1` times (the initial send plus `max_retry` retries).
+    `max_retry = 0` drops on the first error. Each dropped message has its ack
+    callback evaluated with reason `max_retry_exceeded` and bumps the `dropped`
+    counter. This bounds retries on Kafka error responses; resends triggered
+    purely by connection loss remain bounded by `max_batch_age`, not `max_retry`.
   - Add `max_batch_age` producer option (default `infinity`, i.e. disabled).
     When set to a number of milliseconds, a batch is dropped instead of being
     sent to Kafka if ALL of its messages are older than `max_batch_age` (measured
