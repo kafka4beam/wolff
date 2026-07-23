@@ -19,6 +19,9 @@
 
 -define(KEY, key(?FUNCTION_NAME)).
 -define(HOSTS, [{"localhost", 9092}]).
+%% Allowed measurement slack when asserting that at least
+%% max_linger_ms has elapsed (timer precision, scheduling delays).
+-define(LINGER_SLACK_MS, 100).
 -define(assert_eq_optional_tail(EXPR,EXPECTED), assert_eq_optional_tail(fun() -> EXPR end, EXPECTED)).
 
 %% Kafka v2 batch consists of below fields:
@@ -637,6 +640,189 @@ replayq_highmem_overflow_test() ->
   [1] = show( get_telemetry_seq(CntrEventsTable, [wolff, success]) ),
   ets:delete(CntrEventsTable),
   deinstall_event_logging(?FUNCTION_NAME).
+
+%% In memory mode, the producer should linger before popping the queue:
+%% messages arriving one-by-one (each handled in its own mailbox message)
+%% are collected into a single produce request which is
+%% sent when max_linger_ms expires since the first message.
+pop_linger_batch_test_() ->
+  {timeout, 30, fun pop_linger_batch/0}.
+
+pop_linger_batch() ->
+  ClientCfg = client_config(),
+  {ok, Client} = start_client(<<"client-1">>, ?HOSTS, ClientCfg),
+  LingerMs = 500,
+  ProducerCfg = #{partitioner => fun(_, _) -> 0 end,
+                  required_acks => all_isr,
+                  max_linger_ms => LingerMs
+                 },
+  {ok, Producers} = wolff:start_producers(Client, <<"test-topic">>, ProducerCfg),
+  TesterPid = self(),
+  ok = meck:new(kpro, [no_history, no_link, passthrough]),
+  meck:expect(kpro, send,
+              fun(Conn, Req) ->
+                      Payload = iolist_to_binary(lists:last(tuple_to_list(Req))),
+                      TesterPid ! {sent_to_kafka, Payload},
+                      meck:passthrough([Conn, Req])
+              end),
+  Values = [<<"pop-linger-a">>, <<"pop-linger-b">>, <<"pop-linger-c">>],
+  AckFun = fun(_Partition, _BaseOffset) -> TesterPid ! ack, ok end,
+  T0 = erlang:monotonic_time(millisecond),
+  lists:foreach(
+    fun(V) ->
+        _ = wolff:send(Producers, [#{key => <<>>, value => V}], AckFun),
+        timer:sleep(50) %% ensure calls are not collected from mailbox at once
+    end, Values),
+  try
+    %% expect one single produce request holding all 3 values,
+    %% sent only after the linger time expired
+    receive
+      {sent_to_kafka, Payload} ->
+        Elapsed = erlang:monotonic_time(millisecond) - T0,
+        ?assert(Elapsed >= LingerMs - ?LINGER_SLACK_MS, #{elapsed => Elapsed}),
+        lists:foreach(
+          fun(V) -> ?assertNotEqual(nomatch, binary:match(Payload, V)) end,
+          Values)
+    after
+      3000 -> error(timeout)
+    end,
+    %% all 3 calls are acked from the single produce request
+    ok = wait_for_acks(length(Values)),
+    %% and there is no other produce request
+    receive
+      {sent_to_kafka, _} = Extra -> error({unexpected, Extra})
+    after
+      200 -> ok
+    end,
+    %% linger timer is cleared after the pop
+    Pid = wolff_producers:lookup_producer(Producers, 0),
+    ?assertMatch(#{pop_linger_timer := false}, sys:get_state(Pid))
+  after
+    meck:unload(kpro),
+    ok = wolff:stop_producers(Producers),
+    ok = stop_client(Client)
+  end.
+
+%% The pop-linger must not delay sending when the queue already holds
+%% min(max_linger_bytes, max_batch_bytes) worth of bytes.
+pop_linger_full_batch_no_wait_test_() ->
+  {timeout, 30, fun pop_linger_full_batch_no_wait/0}.
+
+pop_linger_full_batch_no_wait() ->
+  ClientCfg = client_config(),
+  {ok, Client} = start_client(<<"client-1">>, ?HOSTS, ClientCfg),
+  LingerMs = 5000,
+  Msg = #{key => <<>>, value => <<"pop-linger-full-batch">>},
+  MsgBytes = wolff_producer:batch_bytes([Msg]),
+  ProducerCfg = #{partitioner => fun(_, _) -> 0 end,
+                  required_acks => all_isr,
+                  max_linger_ms => LingerMs,
+                  %% the 2nd message accumulates enough bytes to flush
+                  max_linger_bytes => MsgBytes + 1
+                 },
+  {ok, Producers} = wolff:start_producers(Client, <<"test-topic">>, ProducerCfg),
+  TesterPid = self(),
+  ok = meck:new(kpro, [no_history, no_link, passthrough]),
+  meck:expect(kpro, send,
+              fun(Conn, Req) ->
+                      Payload = iolist_to_binary(lists:last(tuple_to_list(Req))),
+                      TesterPid ! {sent_to_kafka, Payload},
+                      meck:passthrough([Conn, Req])
+              end),
+  AckFun = fun(_Partition, _BaseOffset) -> TesterPid ! ack, ok end,
+  T0 = erlang:monotonic_time(millisecond),
+  _ = wolff:send(Producers, [Msg], AckFun),
+  _ = wolff:send(Producers, [Msg], AckFun),
+  try
+    %% both messages are flushed in one produce request,
+    %% well before the linger time expires
+    receive
+      {sent_to_kafka, Payload} ->
+        Elapsed = erlang:monotonic_time(millisecond) - T0,
+        ?assert(Elapsed < LingerMs div 2, #{elapsed => Elapsed}),
+        ?assertEqual(2, length(binary:matches(Payload, <<"pop-linger-full-batch">>)))
+    after
+      3000 -> error(timeout)
+    end,
+    ok = wait_for_acks(2)
+  after
+    meck:unload(kpro),
+    ok = wolff:stop_producers(Producers),
+    ok = stop_client(Client)
+  end.
+
+%% A lone under-sized message is delivered within max_linger_ms, never stalls.
+pop_linger_lone_message_test_() ->
+  {timeout, 30, fun pop_linger_lone_message/0}.
+
+pop_linger_lone_message() ->
+  ClientCfg = client_config(),
+  {ok, Client} = start_client(<<"client-1">>, ?HOSTS, ClientCfg),
+  LingerMs = 300,
+  ProducerCfg = #{partitioner => fun(_, _) -> 0 end,
+                  required_acks => all_isr,
+                  max_linger_ms => LingerMs
+                 },
+  {ok, Producers} = wolff:start_producers(Client, <<"test-topic">>, ProducerCfg),
+  TesterPid = self(),
+  AckFun = fun(_Partition, _BaseOffset) -> TesterPid ! ack, ok end,
+  T0 = erlang:monotonic_time(millisecond),
+  _ = wolff:send(Producers, [#{key => <<>>, value => <<"pop-linger-lone">>}], AckFun),
+  try
+    ok = wait_for_acks(1),
+    Elapsed = erlang:monotonic_time(millisecond) - T0,
+    ?assert(Elapsed >= LingerMs - ?LINGER_SLACK_MS, #{elapsed => Elapsed})
+  after
+    ok = wolff:stop_producers(Producers),
+    ok = stop_client(Client)
+  end.
+
+%% When the pop-linger expires while the connection is down, the message
+%% stays queued, and is flushed upon reconnect without lingering another time.
+pop_linger_expire_while_disconnected_test_() ->
+  {timeout, 30, fun pop_linger_expire_while_disconnected/0}.
+
+pop_linger_expire_while_disconnected() ->
+  ClientCfg = client_config(),
+  {ok, Client} = start_client(<<"client-1">>, ?HOSTS, ClientCfg),
+  LingerMs = 300,
+  ProducerCfg = #{partitioner => fun(_, _) -> 0 end,
+                  required_acks => all_isr,
+                  max_linger_ms => LingerMs,
+                  reconnect_delay_ms => 1000
+                 },
+  {ok, Producers} = wolff:start_producers(Client, <<"test-topic">>, ProducerCfg),
+  Pid = wolff_producers:lookup_producer(Producers, 0),
+  #{conn := Conn} = sys:get_state(Pid),
+  ?assert(is_pid(Conn)),
+  TesterPid = self(),
+  AckFun = fun(_Partition, _BaseOffset) -> TesterPid ! ack, ok end,
+  %% an under-sized message starts the pop-linger timer
+  _ = wolff:send(Producers, [#{key => <<>>, value => <<"pop-linger-disc">>}], AckFun),
+  exit(Conn, kill),
+  %% wait for the linger to expire while disconnected
+  timer:sleep(LingerMs * 2),
+  try
+    %% linger expired, but still disconnected: the message is still queued
+    #{conn := Conn2, replayq := Q} = sys:get_state(Pid),
+    ?assertNot(is_pid(Conn2)),
+    ?assertEqual(1, replayq:count(Q)),
+    %% flushed upon reconnect
+    ok = wait_for_acks(1),
+    ?assertMatch(#{pop_linger_timer := false}, sys:get_state(Pid))
+  after
+    ok = wolff:stop_producers(Producers),
+    ok = stop_client(Client)
+  end.
+
+wait_for_acks(0) ->
+  ok;
+wait_for_acks(N) ->
+  receive
+    ack -> wait_for_acks(N - 1)
+  after
+    5000 -> error(timeout)
+  end.
 
 mem_only_replayq_test() ->
   CntrEventsTable = ets:new(cntr_events, [public]),

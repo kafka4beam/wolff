@@ -89,6 +89,8 @@
 -define(reconnect, reconnect).
 -define(linger_expire, linger_expire).
 -define(linger_expire_timer, linger_expire_timer).
+-define(pop_linger_expire, pop_linger_expire).
+-define(pop_linger_timer, pop_linger_timer).
 -define(DEFAULT_REPLAYQ_SEG_BYTES, 10 * 1024 * 1024).
 -define(DEFAULT_REPLAYQ_LIMIT, 2000000000).
 -define(Q_ITEM(CallId, Ts, Batch), {CallId, Ts, Batch}).
@@ -130,6 +132,7 @@
                   , topic := topic()
                   , calls := ?EMPTY | calls()
                   , sender => pid()
+                  , ?pop_linger_timer := false | reference()
                   }.
 
 %% @doc Start a per-partition producer worker.
@@ -143,8 +146,12 @@
 %% * `max_batch_bytes': Most number of bytes to collect into a produce request.
 %%    NOTE: This is only a rough estimation of the batch size towards kafka, NOT the
 %%    exact max allowed message size configured in kafka.
-%% * `max_linger_ms': Age in milliseconds a baatch can stay in queue when the connection
-%%    is idle (as in no pending acks). Default: 0 (as in send immediately)
+%% * `max_linger_ms': Number of milliseconds to wait for more calls to accumulate
+%%    a larger batch. When the queue is writing to disk, the wait happens before
+%%    enqueue (to also batch disk writes); otherwise the producer delays popping
+%%    the queue for a new produce request until at least
+%%    `min(max_linger_bytes, max_batch_bytes)' bytes are queued, or the linger
+%%    time expires. Default: 0 (as in send immediately)
 %% * `max_linger_bytes': Number of bytes to collect before sending it to Kafka.
 %%    If set to 0, `max_batch_bytes' is taken for mem-only mode, otherwise it's 10 times
 %%    `max_batch_bytes' (but never exceeds 10MB) to optimize disk write.
@@ -165,7 +172,8 @@ start_link(ClientId, Topic, Partition, MaybeConnPid, Config) ->
          partition => Partition,
          conn => MaybeConnPid,
          config => use_defaults(Config),
-         ?linger_expire_timer => false
+         ?linger_expire_timer => false,
+         ?pop_linger_timer => false
         },
   %% the garbage collection can be expensive if using the default 'on_heap' option.
   SpawnOpts = [{spawn_opt, [{message_queue_data, off_heap}]}],
@@ -309,6 +317,16 @@ handle_info(?linger_expire, St0) ->
   St1 = enqueue_calls(St0#{?linger_expire_timer => false}, no_linger),
   St = maybe_send_to_kafka(St1),
   {noreply, St};
+handle_info({timeout, Ref, ?pop_linger_expire}, St0) ->
+  case maps:get(?pop_linger_timer, St0, false) of
+    Ref ->
+      %% Lingered long enough, flush the queue even if the batch is under-sized
+      St = maybe_send_to_kafka(St0#{?pop_linger_timer => false}, no_linger),
+      {noreply, St};
+    _ ->
+      %% stale timer message: the timer fired right before it was cancelled
+      {noreply, St0}
+  end;
 handle_info(?SEND_REQ(_, Batch, _) = Call, #{calls := Calls0, config := #{max_linger_bytes := Max}} = St0) ->
   Bytes = batch_bytes(Batch),
   Calls = collect_send_calls(Call, Bytes, Calls0, Max),
@@ -375,7 +393,9 @@ handle_leader_connection(#{topic := Topic, partition := Partition, conn := Conn}
              conn := Conn},
   St2 = get_produce_version(St1),
   St3 = resend_sent_reqs(St2, ?reconnect),
-  maybe_send_to_kafka(St3);
+  %% no_linger: the queue had the whole disconnected period to accumulate,
+  %% flush it immediately (also in case the pop-linger expired while disconnected)
+  maybe_send_to_kafka(St3, no_linger);
 handle_leader_connection(#{conn := Reason} = St) ->
   mark_connection_down(St#{reconnect_timer => ?no_timer}, Reason).
 
@@ -488,14 +508,19 @@ resend_sent_reqs(#{sent_reqs := SentReqs,
   NewSentReqs = lists:foldl(F, [], queue:to_list(SentReqs)),
   St#{sent_reqs := queue:from_list(lists:reverse(NewSentReqs))}.
 
-maybe_send_to_kafka(#{conn := Conn, replayq := Q} = St) ->
+maybe_send_to_kafka(St) ->
+  maybe_send_to_kafka(St, maybe_linger).
+
+%% Linger =:= no_linger when the pop-linger has expired or after a reconnect:
+%% flush the queue without waiting for more calls to accumulate.
+maybe_send_to_kafka(#{conn := Conn, replayq := Q} = St, Linger) ->
   case replayq:count(Q) =:= 0 of
     true ->
       %% nothing to send
       St;
     false when is_pid(Conn) ->
       %% has connection, try send
-      maybe_send_to_kafka_has_pending(St);
+      maybe_send_to_kafka_has_pending(St, Linger);
     false ->
       %% no connection
       %% maybe the connection was closed after ideling
@@ -504,9 +529,13 @@ maybe_send_to_kafka(#{conn := Conn, replayq := Q} = St) ->
       ensure_delayed_reconnect(St, no_delay_for_first_attempt)
   end.
 
-maybe_send_to_kafka_has_pending(St) ->
+maybe_send_to_kafka_has_pending(St, Linger) ->
   case is_send_ahead_allowed(St) of
-    true -> send_to_kafka(St);
+    true ->
+      case should_linger_before_pop(St, Linger) of
+        true -> ensure_pop_linger_timer(St);
+        false -> send_to_kafka(ensure_pop_linger_cancel(St))
+      end;
     false -> St %% reached max inflight limit
   end.
 
@@ -947,6 +976,44 @@ is_linger_continue(#{calls := Calls, config := Config, replayq := Q}) ->
       end;
     false ->
       false
+  end.
+
+%% Check if the producer should delay popping the queue so an under-sized
+%% batch gets a chance to grow from future send calls.
+%% Only when not writing to disk: when writing to disk, the linger is applied
+%% before enqueue (see is_linger_continue/1) to also batch disk writes.
+%% NOTE: the ?pop_linger_timer key may be absent when the new beam is
+%% hot-loaded into an already running producer, hence maps:get/3 with
+%% default in ensure_pop_linger_* below.
+should_linger_before_pop(_St, no_linger) ->
+  false;
+should_linger_before_pop(#{config := #{max_linger_ms := 0}}, _) ->
+  false;
+should_linger_before_pop(#{replayq := Q, config := Config}, _) ->
+  #{max_linger_bytes := MaxLingerBytes, max_batch_bytes := MaxBatchBytes} = Config,
+  (not replayq:is_writing_to_disk(Q)) andalso
+    replayq:bytes(Q) < min(MaxLingerBytes, MaxBatchBytes).
+
+ensure_pop_linger_timer(St) ->
+  case maps:get(?pop_linger_timer, St, false) of
+    false ->
+      #{config := #{max_linger_ms := Ms}} = St,
+      Ref = erlang:start_timer(Ms, self(), ?pop_linger_expire),
+      St#{?pop_linger_timer => Ref};
+    _ ->
+      %% timer is already started
+      St
+  end.
+
+ensure_pop_linger_cancel(St) ->
+  case maps:get(?pop_linger_timer, St, false) of
+    false ->
+      St;
+    Ref ->
+      %% no need to flush a stale ?pop_linger_expire message:
+      %% it's ignored by the timer reference check in handle_info
+      _ = erlang:cancel_timer(Ref),
+      St#{?pop_linger_timer => false}
   end.
 
 enqueue_calls(#{calls := ?EMPTY} = St, _) ->
