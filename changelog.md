@@ -19,6 +19,20 @@
     buffered messages across long broker outages instead of sending arbitrarily
     stale data.
 
+* 4.1.11
+  - `max_linger_ms` now also applies to memory-mode (and not-yet-offloaded) queues.
+    Since 4.1.1, the linger delay was only applied before enqueue, and only when
+    replayq is writing to disk (to batch disk writes), meaning memory-mode producers
+    sent each arrival immediately, resulting in many small produce requests under
+    steady low-to-moderate load.
+    Now, when it is time to form a new produce request and the queue holds less than
+    `min(max_linger_bytes, max_batch_bytes)` bytes, the producer waits up to
+    `max_linger_ms` for more calls to accumulate before popping the queue.
+    The wait ends immediately once a full batch's worth of bytes is queued, so under
+    sustained load full batches are sent with no added latency; only under-sized
+    (tail) batches are delayed, bounded by `max_linger_ms`.
+    The default `max_linger_ms = 0` keeps the previous behavior (send immediately).
+
 * 4.1.10
   - Reserve a minimum producer buffer under high memory pressure.
     When `drop_if_highmem` is enabled and the system reports high memory usage,
