@@ -1,3 +1,10 @@
+* 4.2.1
+  - Fix the stale `wolff:offset_reply()` type spec: add the missing drop-reason
+    atoms an ack callback (or `send_sync`) may receive: `partition_lost`,
+    and the ones introduced in 4.2.0: `message_expired` (`max_batch_age`)
+    and `max_retry_exceeded` (`max_retry`).
+    No behavior change, spec (dialyzer) only.
+
 * 4.2.0
   - Add `max_retry` producer option (default `infinity`, i.e. retry forever).
     When set to a non-negative integer, a batch that keeps getting Kafka error

@@ -66,7 +66,20 @@
 -type partition() :: kpro:partition().
 -type name() :: atom() | binary().
 -type offset() :: kpro:offset().
--type offset_reply() :: offset() | buffer_overflow_discarded | message_too_large.
+%% Kafka offset for successfully produced messages (`-1' when `required_acks'
+%% is `none'), or the reason atom when the message is dropped instead:
+%% - `buffer_overflow_discarded': pushed out of the buffer by newer messages
+%%   (replayq overflow, or high memory pressure with `drop_if_highmem').
+%% - `partition_lost': the partition is gone (e.g. topic deleted or shrunk).
+%% - `message_expired': all messages in the batch are older than `max_batch_age'.
+%% - `max_retry_exceeded': dropped after `max_retry' failed retries.
+%% - `message_too_large': a single-call batch is too large for the topic.
+-type offset_reply() :: offset()
+                      | buffer_overflow_discarded
+                      | partition_lost
+                      | message_expired
+                      | max_retry_exceeded
+                      | message_too_large.
 -type producers_cfg() :: wolff_producers:config().
 -type producers() :: wolff_producers:producers().
 -type partitioner() :: wolff_producers:partitioner().
