@@ -19,6 +19,9 @@
 
 -define(KEY, key(?FUNCTION_NAME)).
 -define(HOSTS, [{"localhost", 9092}]).
+%% Allowed measurement slack when asserting that at least
+%% max_linger_ms has elapsed (timer precision, scheduling delays).
+-define(LINGER_SLACK_MS, 100).
 -define(assert_eq_optional_tail(EXPR,EXPECTED), assert_eq_optional_tail(fun() -> EXPR end, EXPECTED)).
 
 %% Kafka v2 batch consists of below fields:
@@ -676,7 +679,7 @@ pop_linger_batch() ->
     receive
       {sent_to_kafka, Payload} ->
         Elapsed = erlang:monotonic_time(millisecond) - T0,
-        ?assert(Elapsed >= LingerMs - 100, #{elapsed => Elapsed}),
+        ?assert(Elapsed >= LingerMs - ?LINGER_SLACK_MS, #{elapsed => Elapsed}),
         lists:foreach(
           fun(V) -> ?assertNotEqual(nomatch, binary:match(Payload, V)) end,
           Values)
@@ -768,7 +771,7 @@ pop_linger_lone_message() ->
   try
     ok = wait_for_acks(1),
     Elapsed = erlang:monotonic_time(millisecond) - T0,
-    ?assert(Elapsed >= LingerMs - 100, #{elapsed => Elapsed})
+    ?assert(Elapsed >= LingerMs - ?LINGER_SLACK_MS, #{elapsed => Elapsed})
   after
     ok = wolff:stop_producers(Producers),
     ok = stop_client(Client)
