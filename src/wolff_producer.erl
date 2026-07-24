@@ -51,6 +51,7 @@
                       drop_if_highmem |
                       max_batch_age |
                       max_retry |
+                      reconnect_delay_ms |
                       telemetry_meta_data |
                       max_partitions.
 
@@ -69,6 +70,7 @@
                        drop_if_highmem => boolean(),
                        max_batch_age => timeout(),
                        max_retry => infinity | non_neg_integer(),
+                       reconnect_delay_ms => non_neg_integer(),
                        telemetry_meta_data => map(),
                        max_partitions => pos_integer()
                       }.
@@ -87,6 +89,7 @@
                           drop_if_highmem => boolean(),
                           max_batch_age => timeout(),
                           max_retry => infinity | non_neg_integer(),
+                          reconnect_delay_ms => non_neg_integer(),
                           telemetry_meta_data => map(),
                           max_partitions => pos_integer()
                          }.
@@ -189,6 +192,12 @@
 %%    on the first error; `infinity' (the default) retries forever. Note this
 %%    counts Kafka error responses only; resends triggered purely by connection
 %%    loss are bounded by `max_batch_age', not by `max_retry'.
+%% * `reconnect_delay_ms': default 2000. Base delay in milliseconds before a
+%%    disconnected producer tries to reconnect to the partition leader. A random
+%%    jitter of 1..1000 ms is added on top so that partition workers do not all
+%%    reconnect at the same instant. The very first attempt right after a
+%%    disconnect uses no delay (reconnect immediately); the delay applies to
+%%    subsequent attempts.
 -spec start_link(wolff:client_id(), topic(), partition(), pid() | ?conn_down(any()), config_in()) ->
   {ok, pid()} | {error, any()}.
 start_link(ClientId, Topic, Partition, MaybeConnPid, Config) ->

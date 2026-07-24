@@ -6,6 +6,8 @@
     No behavior change, spec (dialyzer) only.
 
 * 4.2.0
+  - Document the existing `reconnect_delay_ms` producer option (default 2000) in
+    the `config_key`/`config_in` specs and producer docs. Behavior is unchanged.
   - Add `max_retry` producer option (default `infinity`, i.e. retry forever).
     When set to a non-negative integer, a batch that keeps getting Kafka error
     responses (e.g. `not_leader_for_partition`) is dropped once it has been
