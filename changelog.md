@@ -1,3 +1,10 @@
+* 4.2.2
+  - Honor `client_id` in the client configuration for Kafka request headers.
+    When absent or `undefined`, use the supervised client ID as before.
+    Applications that already set this option now send the configured value.
+    This changes the identity used by client-ID quotas, broker policies and audit logs.
+    The supervised client ID and its registrations remain unchanged.
+
 * 4.2.1
   - Fix the stale `wolff:offset_reply()` type spec: add the missing drop-reason
     atoms an ack callback (or `send_sync`) may receive: `partition_lost`,
