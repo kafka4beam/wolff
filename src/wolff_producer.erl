@@ -573,8 +573,10 @@ send_to_kafka(#{sent_reqs := SentReqs,
   St2 = maybe_fake_kafka_ack(NoAck, St1),
   maybe_send_to_kafka(St2).
 
-%% when require no acks do not add to sent_reqs and ack caller immediately
-maybe_fake_kafka_ack(_NoAck = true, St) ->
+%% Complete requests immediately when Kafka acknowledgments are disabled.
+maybe_fake_kafka_ack(_NoAck = true, #{sent_reqs := SentReqs} = St) ->
+  {value, #{req_ref := {alias, Ref}}} = queue:peek(SentReqs),
+  erlang:unalias(Ref),
   do_handle_kafka_ack(?no_error, ?UNKNOWN_OFFSET, St);
 maybe_fake_kafka_ack(_NoAck, St) -> St.
 
