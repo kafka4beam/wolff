@@ -210,6 +210,9 @@ make eunit
 make ct
 ```
 
+`make eunit` enables standard-allocator tagging for the memory leak test.
+When running EUnit directly, use `ERL_FLAGS="+MDatags true" rebar3 eunit`.
+
 ## License
 
 Apache License Version 2.0
