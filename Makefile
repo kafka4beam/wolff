@@ -27,7 +27,7 @@ ct:
 
 .PHONY: eunit
 eunit:
-	@rebar3 eunit -v -c
+	@ERL_FLAGS="$(ERL_FLAGS) +MDatags true" rebar3 eunit -v -c
 
 .PHONY: clean
 clean:
