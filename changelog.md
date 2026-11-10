@@ -1,3 +1,6 @@
+* 4.1.12
+  - Fixed memory (alias) leak when require no acks.
+
 * 4.1.11
   - `max_linger_ms` now also applies to memory-mode (and not-yet-offloaded) queues.
     Since 4.1.1, the linger delay was only applied before enqueue, and only when
