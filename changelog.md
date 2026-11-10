@@ -1,3 +1,6 @@
+* 4.2.3
+  - Fixed memory (alias) leak when require no acks.
+
 * 4.2.2
   - Honor `client_id` in the client configuration for Kafka request headers.
     When absent or `undefined`, use the supervised client ID as before.
